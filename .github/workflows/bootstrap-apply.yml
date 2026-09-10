@@ -73,6 +73,7 @@ jobs:
       BOOTSTRAP_SERVICE_ACCOUNT: ${{ vars.GCP_BOOTSTRAP_SERVICE_ACCOUNT }}
       RUNTIME_SERVICE_ACCOUNT: ${{ vars.GCP_RUNTIME_SERVICE_ACCOUNT }}
       BILLING_SERVICE_ACCOUNT: ${{ vars.GCP_BILLING_SERVICE_ACCOUNT }}
+      BREAKGLASS_OWNER: ${{ vars.GCP_BREAKGLASS_OWNER }}
       RELAYS_ENABLED: ${{ vars.RELAYS_ENABLED }}
       RELAY_IDENTITY_VERSION: ${{ vars.RELAY_IDENTITY_VERSION }}
       EXAMPLE_IDENTITY_VERSION: ${{ vars.EXAMPLE_IDENTITY_VERSION }}
@@ -95,7 +96,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
           test "$EXPECTED_SHA" = "$(git ls-remote origin refs/heads/main | cut -f1)"
           for name in PROJECT_ID BOOTSTRAP_WIF_PROVIDER BOOTSTRAP_SERVICE_ACCOUNT \
-            RUNTIME_SERVICE_ACCOUNT BILLING_SERVICE_ACCOUNT RELAYS_ENABLED RELAY_IDENTITY_VERSION \
+            RUNTIME_SERVICE_ACCOUNT BILLING_SERVICE_ACCOUNT BREAKGLASS_OWNER RELAYS_ENABLED RELAY_IDENTITY_VERSION \
             EXAMPLE_IDENTITY_VERSION DEPLOYMENT_ENVIRONMENT CLOUD_RUN_INGRESS \
             MAX_INSTANCES_PER_REGION RELAY_REGION_ALLOWLIST; do
             test -n "${!name}" || { echo "::error::$name is not configured"; exit 1; }
@@ -254,12 +255,19 @@ jobs:
             "$RUNTIME_SERVICE_ACCOUNT:runtime" \
             "$BOOTSTRAP_SERVICE_ACCOUNT:bootstrap" \
             "$BILLING_SERVICE_ACCOUNT:billing" \
-            "hop-infra-drift@$PROJECT_ID.iam.gserviceaccount.com:drift"; do
+            "hop-infra-drift@$PROJECT_ID.iam.gserviceaccount.com:drift" \
+            "hop-relay@$PROJECT_ID.iam.gserviceaccount.com:relay" \
+            "hop-example@$PROJECT_ID.iam.gserviceaccount.com:example" \
+            "hop-accountd@$PROJECT_ID.iam.gserviceaccount.com:accountd" \
+            "hop-console@$PROJECT_ID.iam.gserviceaccount.com:console"; do
             account="${item%%:*}"; label="${item##*:}"
             gcloud iam service-accounts get-iam-policy "$account" --format=json > "$RUNNER_TEMP/${label}-iam.json"
           done
           gcloud projects get-iam-policy "$PROJECT_ID" --format=json > "$RUNNER_TEMP/project-iam.json"
           gcloud iam roles list --project "$PROJECT_ID" --format=json > "$RUNNER_TEMP/project-roles.json"
+          gcloud iam service-accounts list --project "$PROJECT_ID" \
+            --filter="email=hop-cloudbuild@$PROJECT_ID.iam.gserviceaccount.com" \
+            --format=json > "$RUNNER_TEMP/retired-cloudbuild-sa.json"
           for item in \
             "hop-billing-price-ids:price" \
             "stripe-api-key:stripe" \
@@ -270,9 +278,12 @@ jobs:
           done
           gcloud storage buckets get-iam-policy "gs://$PROJECT_ID-tfstate" \
             --format=json > "$RUNNER_TEMP/runtime-state-iam.json"
-          python3 - "$RUNNER_TEMP" "$OPERATION" "$PROJECT_ID" "$RUNTIME_SERVICE_ACCOUNT" "$BOOTSTRAP_SERVICE_ACCOUNT" "$BILLING_SERVICE_ACCOUNT" <<'PY'
-          import json, pathlib, sys
-          root, operation, project, runtime_sa, bootstrap_sa, billing_sa = pathlib.Path(sys.argv[1]), *sys.argv[2:]
+          python3 - "$RUNNER_TEMP" "$OPERATION" "$PROJECT_ID" "$RUNTIME_SERVICE_ACCOUNT" "$BOOTSTRAP_SERVICE_ACCOUNT" "$BILLING_SERVICE_ACCOUNT" "$BREAKGLASS_OWNER" <<'PY'
+          import json, pathlib, re, sys
+          root = pathlib.Path(sys.argv[1])
+          operation, project, runtime_sa, bootstrap_sa, billing_sa, breakglass_owner = sys.argv[2:]
+          if not re.fullmatch(r"user:[^@\s]+@[^@\s]+", breakglass_owner):
+              raise SystemExit("project breakglass owner is invalid")
           provider = json.load(open(root / "provider.json", encoding="utf-8"))
           final = 'assertion.repository == "hopmesh/hop"'
           rollback = 'assertion.repository == "hopmesh/platform" || assertion.repository == "hopmesh/hop"'
@@ -298,29 +309,36 @@ jobs:
               "bootstrap": {workflow("hopmesh/hop", "bootstrap-apply.yml")},
               "billing": {workflow("hopmesh/hop", "billing-catalog.yml")},
               "drift": {workflow("hopmesh/hop", "infra-drift.yml")},
+              "relay": set(),
+              "example": set(),
+              "accountd": set(),
+              "console": set(),
           }
           if operation == "rollback":
               expected_members["runtime"].add(workflow("hopmesh/platform", "runtime-deploy.yml"))
               expected_members["bootstrap"].add(workflow("hopmesh/platform", "handoff-deploy-authority.yml"))
               expected_members["billing"].add(workflow("hopmesh/platform", "billing-catalog.yml"))
-          risky = {"roles/iam.workloadIdentityUser", "roles/iam.serviceAccountTokenCreator", "roles/iam.serviceAccountOpenIdTokenCreator"}
-          for label, wanted in expected_members.items():
-              policy = json.load(open(root / f"{label}-iam.json", encoding="utf-8"))
+          policies = {
+              label: json.load(open(root / f"{label}-iam.json", encoding="utf-8"))
+              for label in expected_members
+          }
+          deploy_member = f"serviceAccount:{runtime_sa}"
+          expected_sa_policies = {
+              label: {("roles/iam.workloadIdentityUser", member) for member in members}
+              for label, members in expected_members.items()
+          }
+          for label in ("relay", "example", "accountd", "console"):
+              expected_sa_policies[label] = {("roles/iam.serviceAccountUser", deploy_member)}
+          for label, expected in expected_sa_policies.items():
+              policy = policies[label]
               found = []
               for binding in policy.get("bindings", []):
-                  role = binding.get("role")
-                  members = binding.get("members", [])
-                  if role != "roles/iam.workloadIdentityUser" and any(member.startswith(("principal://", "principalSet://")) for member in members):
-                      raise SystemExit(f"{label} has a federated principal under another role")
-                  if role not in risky:
-                      continue
                   if binding.get("condition") not in (None, {}):
-                      raise SystemExit(f"{label} live auth grant has an IAM condition")
-                  for member in members:
-                      found.append((role, member))
-              expected = {("roles/iam.workloadIdentityUser", member) for member in wanted}
+                      raise SystemExit(f"{label} service-account IAM grant has a condition")
+                  for member in binding.get("members", []):
+                      found.append((binding.get("role"), member))
               if set(found) != expected or len(found) != len(expected):
-                  raise SystemExit(f"{label} live auth grants drifted")
+                  raise SystemExit(f"{label} complete service-account IAM policy drifted")
           drift_sa = f"hop-infra-drift@{project}.iam.gserviceaccount.com"
           identities = {
               "runtime": f"serviceAccount:{runtime_sa}",
@@ -328,24 +346,50 @@ jobs:
               "billing": f"serviceAccount:{billing_sa}",
               "drift": f"serviceAccount:{drift_sa}",
           }
-          expected_project = {
-              "runtime": {
-                  "roles/bigquery.dataEditor", "roles/certificatemanager.editor",
-                  "roles/compute.loadBalancerAdmin", "roles/dns.admin", "roles/logging.configWriter",
-                  "roles/logging.logWriter", "roles/monitoring.editor", "roles/run.developer",
-                  "roles/serviceusage.serviceUsageConsumer",
-                  f"projects/{project}/roles/hopRuntimeDeployRunIam",
-                  f"projects/{project}/roles/hopRuntimeDeployRegions",
+          number = "149923095434"
+          def service_account(email):
+              return f"serviceAccount:{email}"
+          def hop_service(name):
+              return service_account(f"{name}@{project}.iam.gserviceaccount.com")
+          expected_project_policy = {
+              f"projects/{project}/roles/hopBootstrapApplySecrets": {identities["bootstrap"]},
+              f"projects/{project}/roles/hopInfraDriftViewer": {identities["drift"]},
+              f"projects/{project}/roles/hopRuntimeDeployRegions": {identities["runtime"]},
+              f"projects/{project}/roles/hopRuntimeDeployRunIam": {identities["runtime"]},
+              "roles/artifactregistry.admin": {identities["bootstrap"]},
+              "roles/artifactregistry.serviceAgent": {service_account(f"service-{number}@gcp-sa-artifactregistry.iam.gserviceaccount.com")},
+              "roles/bigquery.dataEditor": {hop_service("hop-billingd"), identities["runtime"]},
+              "roles/certificatemanager.editor": {identities["runtime"]},
+              "roles/cloudbuild.serviceAgent": {service_account(f"service-{number}@gcp-sa-cloudbuild.iam.gserviceaccount.com")},
+              "roles/cloudsql.admin": {identities["bootstrap"]},
+              "roles/cloudsql.client": {hop_service("hop-accountd")},
+              "roles/compute.instanceGroupManagerServiceAgent": {service_account(f"{number}@cloudservices.gserviceaccount.com")},
+              "roles/compute.loadBalancerAdmin": {identities["runtime"]},
+              "roles/compute.serviceAgent": {service_account(f"service-{number}@compute-system.iam.gserviceaccount.com")},
+              "roles/containeranalysis.ServiceAgent": {service_account(f"service-{number}@container-analysis.iam.gserviceaccount.com")},
+              "roles/containerregistry.ServiceAgent": {service_account(f"service-{number}@containerregistry.iam.gserviceaccount.com")},
+              "roles/datastore.owner": {identities["bootstrap"]},
+              "roles/datastore.user": {hop_service("hop-accountd"), hop_service("hop-relay")},
+              "roles/datastore.viewer": {hop_service("hop-billingd")},
+              "roles/dns.admin": {identities["runtime"]},
+              "roles/firebaserules.system": {service_account(f"service-{number}@firebase-rules.iam.gserviceaccount.com")},
+              "roles/firestore.serviceAgent": {service_account(f"service-{number}@gcp-sa-firestore.iam.gserviceaccount.com")},
+              "roles/iam.roleAdmin": {identities["bootstrap"]},
+              "roles/iam.serviceAccountAdmin": {identities["bootstrap"]},
+              "roles/iam.workloadIdentityPoolAdmin": {identities["bootstrap"]},
+              "roles/logging.configWriter": {identities["runtime"]},
+              "roles/logging.logWriter": {
+                  hop_service("hop-accountd"), hop_service("hop-billingd"), hop_service("hop-console"),
+                  identities["runtime"], hop_service("hop-example"), hop_service("hop-relay"),
               },
-              "bootstrap": {
-                  "roles/artifactregistry.admin", "roles/cloudsql.admin", "roles/datastore.owner",
-                  "roles/iam.roleAdmin", "roles/iam.serviceAccountAdmin",
-                  "roles/iam.workloadIdentityPoolAdmin", "roles/resourcemanager.projectIamAdmin",
-                  "roles/serviceusage.serviceUsageAdmin",
-                  f"projects/{project}/roles/hopBootstrapApplySecrets",
-              },
-              "billing": set(),
-              "drift": {f"projects/{project}/roles/hopInfraDriftViewer"},
+              "roles/monitoring.editor": {identities["runtime"]},
+              "roles/owner": {breakglass_owner},
+              "roles/pubsub.serviceAgent": {service_account(f"service-{number}@gcp-sa-pubsub.iam.gserviceaccount.com")},
+              "roles/resourcemanager.projectIamAdmin": {identities["bootstrap"]},
+              "roles/run.developer": {identities["runtime"]},
+              "roles/run.serviceAgent": {service_account(f"service-{number}@serverless-robot-prod.iam.gserviceaccount.com")},
+              "roles/serviceusage.serviceUsageAdmin": {identities["bootstrap"]},
+              "roles/serviceusage.serviceUsageConsumer": {identities["runtime"]},
           }
           project_policy = json.load(open(root / "project-iam.json", encoding="utf-8"))
           project_roles_raw = json.load(open(root / "project-roles.json", encoding="utf-8"))
@@ -360,26 +404,32 @@ jobs:
               "secretmanager.versions.destroy", "secretmanager.versions.disable",
               "secretmanager.versions.enable",
           }
-          found_project = {label: [] for label in identities}
+          found_project_policy = {}
           for binding in project_policy.get("bindings", []):
               role = binding.get("role")
               members = binding.get("members", [])
+              if not isinstance(role, str) or not isinstance(members, list):
+                  raise SystemExit("project IAM binding is malformed")
+              if binding.get("condition") not in (None, {}):
+                  raise SystemExit("project IAM contains a conditioned binding")
               if any(member.startswith(("principal://", "principalSet://")) for member in members):
                   raise SystemExit("project IAM contains a federated principal")
-              if members and isinstance(role, str) and role.startswith("roles/secretmanager."):
-                  raise SystemExit("project IAM grants a predefined Secret Manager role")
+              if role.startswith("organizations/"):
+                  raise SystemExit("project IAM binds an organization-defined custom role")
+              if role.startswith(f"projects/{project}/roles/") and role not in custom_roles:
+                  raise SystemExit("project IAM binds an unresolved project custom role")
               if role in custom_roles and custom_roles[role] & secret_data_permissions:
                   raise SystemExit("project IAM grants a custom role with secret version data access")
-              for label, member in identities.items():
-                  if member not in members:
-                      continue
-                  if binding.get("condition") not in (None, {}):
-                      raise SystemExit(f"{label} project IAM grant has a condition")
-                  found_project[label].append(role)
-          for label, expected in expected_project.items():
-              found = found_project[label]
-              if set(found) != expected or len(found) != len(expected):
-                  raise SystemExit(f"{label} project IAM grants drifted")
+              if role in found_project_policy:
+                  raise SystemExit("project IAM repeats a role binding")
+              if len(members) != len(set(members)):
+                  raise SystemExit("project IAM repeats a role member")
+              found_project_policy[role] = set(members)
+          if found_project_policy != expected_project_policy:
+              raise SystemExit("complete project IAM policy drifted")
+          retired_accounts = json.load(open(root / "retired-cloudbuild-sa.json", encoding="utf-8"))
+          if not isinstance(retired_accounts, list) or len(retired_accounts) > 1 or (retired_accounts and retired_accounts[0].get("disabled") is not True):
+              raise SystemExit("retired Cloud Build deploy identity is not disabled")
           expected_secrets = {
               "price": {
                   ("roles/secretmanager.secretVersionAdder", f"serviceAccount:{billing_sa}"),
@@ -408,54 +458,52 @@ jobs:
               if set(found) != expected or len(found) != len(expected):
                   raise SystemExit(f"{label} secret IAM grants drifted")
           bucket = json.load(open(root / "runtime-state-iam.json", encoding="utf-8"))
-          expected_storage = {
-              "runtime": {
-                  (
-                      "roles/storage.objectUser", "runtime-state-only",
-                      "The deployer can list the backend bucket and mutate only runtime state objects.",
-                      f"resource.name == 'projects/_/buckets/{project}-tfstate' || resource.name.startsWith('projects/_/buckets/{project}-tfstate/objects/relay-fleet/')",
-                  )
-              },
-              "bootstrap": {
-                  (
-                      "roles/storage.objectAdmin", "bootstrap-state-prefix-only",
-                      "Only the backend bucket listing and objects under the bootstrap/ state prefix.",
-                      f'resource.name == "projects/_/buckets/{project}-tfstate" || resource.name.startsWith("projects/_/buckets/{project}-tfstate/objects/bootstrap/")',
-                  ),
-                  (f"projects/{project}/roles/hopBootstrapApplyStateBucketIam", None, None, None),
-              },
-              "billing": {
-                  (
-                      "roles/storage.objectAdmin", "billing-state-prefix-only",
-                      "Only objects under the billing/ state prefix.",
-                      f'resource.name == "projects/_/buckets/{project}-tfstate" || resource.name.startsWith("projects/_/buckets/{project}-tfstate/objects/billing/")',
-                  )
-              },
-              "drift": {
-                  (
-                      "roles/storage.objectViewer", "runtime-drift-state-read-only",
-                      "The drift identity may list the backend and read only runtime state objects.",
-                      f'resource.name == "projects/_/buckets/{project}-tfstate" || resource.name.startsWith("projects/_/buckets/{project}-tfstate/objects/relay-fleet/")',
-                  )
-              },
+          expected_bucket_policy = {
+              (f"projects/{project}/roles/hopBootstrapApplyStateBucketIam", identities["bootstrap"], None, None, None),
+              ("roles/storage.legacyBucketOwner", f"projectEditor:{project}", None, None, None),
+              ("roles/storage.legacyBucketOwner", f"projectOwner:{project}", None, None, None),
+              ("roles/storage.legacyBucketReader", f"projectViewer:{project}", None, None, None),
+              ("roles/storage.legacyObjectOwner", f"projectEditor:{project}", None, None, None),
+              ("roles/storage.legacyObjectOwner", f"projectOwner:{project}", None, None, None),
+              ("roles/storage.legacyObjectReader", f"projectViewer:{project}", None, None, None),
+              (
+                  "roles/storage.objectUser", identities["runtime"], "runtime-state-only",
+                  "The deployer can list the backend bucket and mutate only runtime state objects.",
+                  f"resource.name == 'projects/_/buckets/{project}-tfstate' || resource.name.startsWith('projects/_/buckets/{project}-tfstate/objects/relay-fleet/')",
+              ),
+              (
+                  "roles/storage.objectAdmin", identities["bootstrap"], "bootstrap-state-prefix-only",
+                  "Only the backend bucket listing and objects under the bootstrap/ state prefix.",
+                  f'resource.name == "projects/_/buckets/{project}-tfstate" || resource.name.startsWith("projects/_/buckets/{project}-tfstate/objects/bootstrap/")',
+              ),
+              (
+                  "roles/storage.objectAdmin", identities["billing"], "billing-state-prefix-only",
+                  "Only objects under the billing/ state prefix.",
+                  f'resource.name == "projects/_/buckets/{project}-tfstate" || resource.name.startsWith("projects/_/buckets/{project}-tfstate/objects/billing/")',
+              ),
+              (
+                  "roles/storage.objectViewer", identities["drift"], "runtime-drift-state-read-only",
+                  "The drift identity may list the backend and read only runtime state objects.",
+                  f'resource.name == "projects/_/buckets/{project}-tfstate" || resource.name.startsWith("projects/_/buckets/{project}-tfstate/objects/relay-fleet/")',
+              ),
           }
           if operation == "rollback":
-              expected_storage["runtime"].add((
-                  "roles/storage.objectViewer", "billing-state-read-only",
+              expected_bucket_policy.add((
+                  "roles/storage.objectViewer", identities["runtime"], "billing-state-read-only",
                   "The deployer may read (never write) the isolated billing state for price ids.",
                   f'resource.name.startsWith("projects/_/buckets/{project}-tfstate/objects/billing/")',
               ))
-          found_storage = {label: [] for label in identities}
+          found_bucket_policy = []
           for binding in bucket.get("bindings", []):
+              role = binding.get("role")
+              members = binding.get("members", [])
               condition = binding.get("condition") or {}
-              value = (binding.get("role"), condition.get("title"), condition.get("description"), condition.get("expression"))
-              for label, member in identities.items():
-                  if member in binding.get("members", []):
-                      found_storage[label].append(value)
-          for label, expected in expected_storage.items():
-              found = found_storage[label]
-              if set(found) != expected or len(found) != len(expected):
-                  raise SystemExit(f"{label} live storage grants drifted")
+              if not isinstance(role, str) or not isinstance(members, list) or not isinstance(condition, dict):
+                  raise SystemExit("state bucket IAM binding is malformed")
+              for member in members:
+                  found_bucket_policy.append((role, member, condition.get("title"), condition.get("description"), condition.get("expression")))
+          if set(found_bucket_policy) != expected_bucket_policy or len(found_bucket_policy) != len(expected_bucket_policy):
+              raise SystemExit("complete state bucket IAM policy drifted")
           print(f"verified live authority phase {operation}")
           PY
 

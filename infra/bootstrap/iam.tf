@@ -22,11 +22,11 @@ locals {
   ])
 }
 
-# hop-cloudbuild was the low-privilege Cloud Build source builder. Cloud Build is deleted (images now
-# build in GitHub Actions, which applies the runtime root via WIF), so this identity is no longer
-# managed here. It is still live in the project, so it is dropped from management WITHOUT a destroy and
-# torn down out of band once the legacy trigger and its Cloud Build repository are removed. Never plan a
-# destroy on it from this reviewed apply.
+# hop-cloudbuild was the broad Cloud Build deploy identity. The legacy trigger is disabled, but the
+# identity and project bindings still exist before this cutover. terraform_data.remove_legacy_iam_bindings
+# removes all 12 observed project roles and disables the service account under the saved plan. The
+# removed block keeps the account out of normal resource management, so no implicit delete can race
+# that explicit, read-back migration.
 removed {
   from = google_service_account.build
 

@@ -12,6 +12,8 @@ import subprocess
 import sys
 import tempfile
 
+sys.dont_write_bytecode = True
+
 root = pathlib.Path(sys.argv[1])
 spec = importlib.util.spec_from_file_location("guard", root / "tools/infra-authority-guard.py")
 guard = importlib.util.module_from_spec(spec)
@@ -335,16 +337,23 @@ billing_expression = f'resource.name == "projects/_/buckets/{legacy_cleanup.BUCK
 initial_bucket = {"bindings": [
     {"role": legacy_cleanup.STORAGE_ROLE, "members": [f"serviceAccount:{legacy_cleanup.BOOTSTRAP_SA}"], "condition": {"title": "bootstrap-state-prefix-only", "expression": bootstrap_expression}},
     {"role": legacy_cleanup.STORAGE_ROLE, "members": [f"serviceAccount:{legacy_cleanup.BILLING_SA}"], "condition": {"title": "billing-state-prefix-only", "expression": billing_expression}},
+    {"role": legacy_cleanup.STORAGE_ROLE, "members": [legacy_cleanup.CLOUDBUILD_MEMBER]},
 ]}
 initial_project = {"bindings": [
-    {"role": legacy_cleanup.SECRET_ADMIN_ROLE, "members": [legacy_cleanup.CLOUDBUILD_MEMBER]},
+    {"role": legacy_cleanup.SECRET_ADMIN_ROLE, "members": [legacy_cleanup.CLOUDBUILD_SERVICE_AGENT]},
+    *[
+        {"role": role, "members": [member]}
+        for member, roles in legacy_cleanup.RETIRED_PROJECT_GRANTS
+        for role in roles
+    ],
 ]}
 calls = []
 bucket_reads = 0
 project_reads = 0
+account_reads = 0
 
 def fake_cleanup_run(*args):
-    global bucket_reads, project_reads
+    global bucket_reads, project_reads, account_reads
     calls.append(args)
     if args[:4] == ("gcloud", "storage", "buckets", "get-iam-policy"):
         value = initial_bucket if bucket_reads == 0 else {"bindings": []}
@@ -353,6 +362,10 @@ def fake_cleanup_run(*args):
     if args[:3] == ("gcloud", "projects", "get-iam-policy"):
         value = initial_project if project_reads == 0 else {"bindings": []}
         project_reads += 1
+        return subprocess.CompletedProcess(args, 0, json.dumps(value), "")
+    if args[:4] == ("gcloud", "iam", "service-accounts", "list"):
+        value = [{"email": legacy_cleanup.CLOUDBUILD_SA, "disabled": account_reads > 0}]
+        account_reads += 1
         return subprocess.CompletedProcess(args, 0, json.dumps(value), "")
     return subprocess.CompletedProcess(args, 0, "", "")
 
@@ -372,10 +385,12 @@ finally:
     os.environ.clear()
     os.environ.update(original_environment)
 removals = [call for call in calls if "remove-iam-policy-binding" in call]
-assert len(removals) == 3, removals
+assert len(removals) == 22, removals
 assert sum("--condition" in call for call in removals) == 2, removals
-assert sum(call[:3] == ("gcloud", "projects", "remove-iam-policy-binding") for call in removals) == 1, removals
+assert sum(call[:3] == ("gcloud", "projects", "remove-iam-policy-binding") for call in removals) == 19, removals
+disables = [call for call in calls if call[:4] == ("gcloud", "iam", "service-accounts", "disable")]
+assert len(disables) == 1, disables
 passed += 1
-print("ok   [planned legacy IAM cleanup removes exact three bindings]")
+print("ok   [planned legacy IAM cleanup removes exact grants and disables deploy identity]")
 print(f"infra authority guard tests passed: {passed}")
 PY

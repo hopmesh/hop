@@ -185,13 +185,15 @@ resource "google_secret_manager_secret_iam_member" "infra_drift_price_ids_viewer
   member    = "serviceAccount:${google_service_account.infra_drift.email}"
 }
 
-# One planned migration action removes two duplicate state bindings and the retired Cloud Build
-# service agent's project-wide secret admin. The terraform_data instance records completion in
-# bootstrap state, so this runs once.
+# One planned migration removes two duplicate state bindings, retired Cloud Build secret and bucket
+# grants, all 12 hop-cloudbuild roles, and every role on the unused default compute and legacy build
+# identities. It disables hop-cloudbuild and records completion in bootstrap state.
 resource "terraform_data" "remove_legacy_iam_bindings" {
   input = {
     migration = "remove-legacy-deploy-iam-v1"
   }
+
+  triggers_replace = ["58558461f2362c3da313d8d246c06143497f3530be9eaa9ba1b42a2bca6bd4a7"]
 
   provisioner "local-exec" {
     command = "python3 ${path.module}/remove_legacy_state_bindings.py"

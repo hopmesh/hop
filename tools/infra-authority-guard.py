@@ -109,7 +109,7 @@ EXPECTED_DRIFT_PERMISSIONS = {
     "run.services.list",
     "serviceusage.services.use",
 }
-LEGACY_CLEANUP_SHA256 = "15674b0d0ac92e7a612b0a77c7c9851a0716be0adffdefa5e6d74bca20f2988c"
+LEGACY_CLEANUP_SHA256 = "58558461f2362c3da313d8d246c06143497f3530be9eaa9ba1b42a2bca6bd4a7"
 
 
 def resource_types(text):
@@ -921,7 +921,7 @@ def check(root):
         ("BOOTSTRAP_SERVICE_ACCOUNT", "google_service_account.bootstrap_apply.email"),
         ("BILLING_SERVICE_ACCOUNT", "google_service_account.billing_catalog_apply.email"),
     ]
-    if terraform_data_names != ["remove_legacy_iam_bindings"] or not has_exact_top_level_assignment(cleanup_input, "migration", '"remove-legacy-deploy-iam-v1"') or not has_exact_top_level_assignment(cleanup_provisioner, "command", '"python3 ${path.module}/remove_legacy_state_bindings.py"') or top_level_assignment_pairs(cleanup_environment) != expected_cleanup_environment or cleanup_digest != LEGACY_CLEANUP_SHA256:
+    if terraform_data_names != ["remove_legacy_iam_bindings"] or not has_exact_top_level_assignment(cleanup_input, "migration", '"remove-legacy-deploy-iam-v1"') or not has_exact_top_level_assignment(cleanup, "triggers_replace", f'["{LEGACY_CLEANUP_SHA256}"]') or not has_exact_top_level_assignment(cleanup_provisioner, "command", '"python3 ${path.module}/remove_legacy_state_bindings.py"') or top_level_assignment_pairs(cleanup_environment) != expected_cleanup_environment or cleanup_digest != LEGACY_CLEANUP_SHA256:
         errors.append("planned legacy state IAM cleanup resource or script drifted")
 
     bootstrap_removed_blocks = repeated_blocks(bootstrap, "removed")

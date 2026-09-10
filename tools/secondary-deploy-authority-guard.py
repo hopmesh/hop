@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import re
 from pathlib import Path
 
@@ -12,6 +13,7 @@ import yaml
 BILLING = ".github/workflows/billing-catalog.yml"
 DRIFT = ".github/workflows/infra-drift.yml"
 BOOTSTRAP = ".github/workflows/bootstrap-apply.yml"
+BOOTSTRAP_PROOF_SHA256 = "2a7f92e401affe606000b88c1ec23a353ff1ad611c75ad3f2dcfb7088d1c7474"
 
 
 def load(path: Path) -> dict:
@@ -339,24 +341,30 @@ def check_bootstrap(root: Path) -> list[str]:
         if apply.get("if") != "env.OPERATION == 'apply' || env.OPERATION == 'rollback'":
             errors.append("bootstrap apply operation gate drifted")
         proof_text = proof.get("run", "")
+        if hashlib.sha256(proof_text.encode()).hexdigest() != BOOTSTRAP_PROOF_SHA256:
+            errors.append("bootstrap whole-policy proof source drifted")
         required_counts = {
             '"attribute.workflow": "assertion.workflow_ref"': 1,
             'binding.get("condition") not in (None, {})': 3,
             'workflow("hopmesh/hop", "runtime-deploy.yml")': 1,
             'workflow("hopmesh/platform", "handoff-deploy-authority.yml")': 1,
-            '"roles/iam.serviceAccountTokenCreator"': 1,
-            '"roles/iam.serviceAccountOpenIdTokenCreator"': 1,
             "gcloud projects get-iam-policy": 1,
             "gcloud iam roles list": 1,
+            "gcloud iam service-accounts list": 1,
             "gcloud secrets get-iam-policy": 1,
             "gcloud storage buckets get-iam-policy": 1,
             'raise SystemExit("project IAM contains a federated principal")': 1,
-            'raise SystemExit("project IAM grants a predefined Secret Manager role")': 1,
             'raise SystemExit("project IAM grants a custom role with secret version data access")': 1,
-            "expected_project = {": 1,
+            'raise SystemExit("project IAM binds an organization-defined custom role")': 1,
+            'raise SystemExit("project IAM binds an unresolved project custom role")': 1,
+            "expected_sa_policies = {": 1,
+            'raise SystemExit(f"{label} complete service-account IAM policy drifted")': 1,
+            "expected_project_policy = {": 1,
+            'raise SystemExit("complete project IAM policy drifted")': 1,
+            'raise SystemExit("retired Cloud Build deploy identity is not disabled")': 1,
             "expected_secrets = {": 1,
-            'found_storage = {label: [] for label in identities}': 1,
-            'raise SystemExit(f"{label} live storage grants drifted")': 1,
+            "expected_bucket_policy = {": 1,
+            'raise SystemExit("complete state bucket IAM policy drifted")': 1,
             '"jwksJson" in oidc': 1,
         }
         for required, expected_count in required_counts.items():

@@ -78,7 +78,7 @@ expect("bootstrap plan rejects prior addresses", "bootstrap-apply.yml", 'previou
 expect("bootstrap rollback actions phase-specific", "bootstrap-apply.yml", 'if operation == "rollback":\n                  if address == "google_iam_workload_identity_pool_provider.github"', 'if operation in {"rollback", "apply"}:\n                  if address == "google_iam_workload_identity_pool_provider.github"')
 expect("bootstrap replacement address set exact", "bootstrap-apply.yml", "normal_replacements = {", 'normal_replacements = {\n              "google_service_account.infra_drift",')
 expect("bootstrap removed state accepts exact forget only", "bootstrap-apply.yml", 'address == "google_service_account.build"', 'address.startswith("google_service_account.")')
-expect("bootstrap proof checks token creator", "bootstrap-apply.yml", '"roles/iam.serviceAccountTokenCreator"', '"roles/iam.viewer"')
+expect("bootstrap proof checks complete service account policies", "bootstrap-apply.yml", 'raise SystemExit(f"{label} complete service-account IAM policy drifted")', "pass")
 expect("bootstrap proof checks workflow mapping", "bootstrap-apply.yml", '"attribute.workflow": "assertion.workflow_ref"', '"attribute.workflow": "assertion.actor"')
 expect("bootstrap proof checks IAM conditions", "bootstrap-apply.yml", 'binding.get("condition") not in (None, {})', "False", first=True)
 expect("bootstrap proof checks rollback storage", "bootstrap-apply.yml", "gcloud storage buckets get-iam-policy", "echo skip storage readback")
