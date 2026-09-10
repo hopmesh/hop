@@ -116,6 +116,17 @@ permission_case("all drift permissions supported", supported_catalog, True)
 permission_case("NOT_SUPPORTED drift permission rejected", [{**item, "customRolesSupportLevel": "NOT_SUPPORTED"} if item["name"] == requested_permissions[0] else item for item in supported_catalog], False)
 permission_case("missing drift permission rejected", supported_catalog[1:], False)
 permission_case("malformed permission catalog rejected", {"permissions": supported_catalog}, False)
+with tempfile.TemporaryDirectory() as directory:
+    work = pathlib.Path(directory)
+    source_path = work / "infra/bootstrap/ci_apply.tf"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_text(role_source.replace('"bigquery.datasets.get"', '"attacker.invalid"', 1))
+    catalog_path = work / "permissions.json"
+    catalog_path.write_text(json.dumps(supported_catalog))
+    result = subprocess.run([sys.executable, "-", str(catalog_path)], input=permission_script, text=True, capture_output=True, cwd=work)
+    assert result.returncode != 0 and "attacker.invalid" in result.stderr, result
+passed += 1
+print("ok   [injected unsupported drift permission rejected]")
 policy_run = guard.step_by_name(bootstrap_doc["jobs"]["bootstrap"], "Refuse unrelated bootstrap actions")[1]["run"]
 match = re.search(r"(?ms)<<'PY'\n(.*?)\n\s*PY", policy_run)
 assert match, "bootstrap plan policy heredoc not found"
