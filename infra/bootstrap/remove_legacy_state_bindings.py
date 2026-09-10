@@ -195,7 +195,7 @@ def main() -> None:
     if retired_bucket_matches:
         result = run(
             "gcloud", "storage", "buckets", "remove-iam-policy-binding", f"gs://{BUCKET}",
-            "--member", CLOUDBUILD_MEMBER, "--role", STORAGE_ROLE, "--quiet",
+            "--member", CLOUDBUILD_MEMBER, "--role", STORAGE_ROLE, "--condition", "None", "--quiet",
         )
         if result.returncode != 0:
             raise SystemExit("retired Cloud Build state admin cleanup failed")

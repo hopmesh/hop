@@ -259,18 +259,23 @@ def check_bootstrap(root: Path) -> list[str]:
     try:
         initial_index, initial = step_by_name(job, "Require canonical main and every non-secret input")
         _, materialize = step_by_name(job, "Materialize reviewed non-secret bootstrap inputs")
+        permission_index, permission = step_by_name(job, "Validate drift custom-role permissions")
         plan_index, plan = step_by_name(job, "Create and inspect one saved bootstrap plan")
         policy_index, policy = step_by_name(job, "Refuse unrelated bootstrap actions")
         stale_index, stale = step_by_name(job, "Refuse a superseded bootstrap apply")
         apply_index, apply = step_by_name(job, "Apply the saved bootstrap plan")
         proof_index, proof = step_by_name(job, "Prove final or rollback authority state")
-        order = [initial_index, plan_index, policy_index, stale_index, apply_index, proof_index]
+        order = [initial_index, permission_index, plan_index, policy_index, stale_index, apply_index, proof_index]
         if order != sorted(order):
-            errors.append("bootstrap source, plan, policy, supersession, apply, and proof order drifted")
+            errors.append("bootstrap source, permission preflight, plan, policy, supersession, apply, and proof order drifted")
         initial_text = initial.get("run", "")
         for required in ('git rev-parse HEAD)" = "$EXPECTED_SHA', '"$EXPECTED_SHA" = "$(git ls-remote origin refs/heads/main'):
             if required not in initial_text:
                 errors.append(f"bootstrap initial main check missing: {required}")
+        permission_text = permission.get("run", "")
+        for required in ("gcloud iam list-testable-permissions", 'customRolesSupportLevel") != "NOT_SUPPORTED"', "drift custom role has unsupported permissions"):
+            if permission_text.count(required) != 1:
+                errors.append(f"bootstrap drift permission preflight missing: {required}")
         materialize_text = materialize.get("run", "")
         if 'phase=hop' not in materialize_text or 'if [ "$OPERATION" = rollback ]; then phase=handoff; fi' not in materialize_text:
             errors.append("bootstrap workflow does not map operations to the closed authority phases")
@@ -286,17 +291,19 @@ def check_bootstrap(root: Path) -> list[str]:
             'normal_replacements = {',
             'cleanup_replacements = {',
             'rollback_creates = {',
+            'cleanup_retry_actions = {("create", "delete"), ("delete", "create")}',
             'if operation == "rollback":',
             'address in rollback_creates and actions == ("create",)',
-            'address in cleanup_replacements and actions == ("delete", "create")',
+            'address in normal_replacements and actions in {("create",), ("create", "delete")}',
             'actions == ("delete",) and address in normal_deletes',
             'actions == ("create", "delete") and address in normal_replacements',
-            'actions == ("delete", "create") and address in cleanup_replacements',
             'actions == ("forget",) and address == "google_service_account.build"',
             'raise SystemExit(f"bootstrap plan contains unapproved actions: {bad}")',
         ):
             if policy_text.count(required) != 1:
                 errors.append(f"bootstrap plan policy missing exact guard: {required}")
+        if policy_text.count("address in cleanup_replacements and actions in cleanup_retry_actions") != 2:
+            errors.append("bootstrap cleanup retry is not admitted in both apply and rollback")
         def embedded_set(name):
             match = re.search(rf"(?ms)^\s*{re.escape(name)}\s*=\s*\{{(.*?)^\s*\}}", policy_text)
             return set(re.findall(r'"([^"]+)"', match.group(1))) if match else None
@@ -325,6 +332,7 @@ def check_bootstrap(root: Path) -> list[str]:
                 "google_service_account_iam_member.deploy_runtime_wif",
                 "google_service_account_iam_member.bootstrap_apply_wif",
                 "google_service_account_iam_member.billing_catalog_wif_main",
+                "google_service_account_iam_member.infra_drift_wif",
             },
             "cleanup_replacements": {
                 "terraform_data.remove_legacy_iam_bindings",

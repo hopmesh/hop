@@ -60,14 +60,14 @@ EXPECTED_DRIFT_PERMISSIONS = {
     "bigquery.datasets.get",
     "bigquery.tables.get",
     "bigquery.tables.list",
-    "certificatemanager.certificateMapEntries.get",
-    "certificatemanager.certificateMapEntries.list",
-    "certificatemanager.certificateMaps.get",
-    "certificatemanager.certificateMaps.list",
-    "certificatemanager.certificates.get",
-    "certificatemanager.certificates.list",
-    "certificatemanager.dnsAuthorizations.get",
-    "certificatemanager.dnsAuthorizations.list",
+    "certificatemanager.certmapentries.get",
+    "certificatemanager.certmapentries.list",
+    "certificatemanager.certmaps.get",
+    "certificatemanager.certmaps.list",
+    "certificatemanager.certs.get",
+    "certificatemanager.certs.list",
+    "certificatemanager.dnsauthorizations.get",
+    "certificatemanager.dnsauthorizations.list",
     "certificatemanager.locations.get",
     "certificatemanager.locations.list",
     "compute.addresses.get",
@@ -109,7 +109,7 @@ EXPECTED_DRIFT_PERMISSIONS = {
     "run.services.list",
     "serviceusage.services.use",
 }
-LEGACY_CLEANUP_SHA256 = "58558461f2362c3da313d8d246c06143497f3530be9eaa9ba1b42a2bca6bd4a7"
+LEGACY_CLEANUP_SHA256 = "5a0d2bb3ce619a904f32f0d347e0c9763c033b8197ff7f3e6ec969c0a95391b7"
 
 
 def resource_types(text):
@@ -738,8 +738,22 @@ def check(root):
     provider = resource_block(bootstrap, "google_iam_workload_identity_pool_provider", "github") or ""
     if not has_exact_top_level_assignment(provider, "attribute_condition", "local.github_repository_conditions[var.github_authority_phase]"):
         errors.append("bootstrap WIF provider is not controlled by the closed authority phase")
-    if not has_exact_top_level_assignment(provider, "depends_on", "[terraform_data.remove_legacy_iam_bindings]"):
-        errors.append("bootstrap WIF provider can advance before legacy authority cleanup")
+    provider_dependencies_match = re.search(r"(?ms)^\s*depends_on\s*=\s*\[(.*?)^\s*\]", provider)
+    provider_dependencies_raw = re.findall(r"\b(?:terraform_data|google_[a-z0-9_]+)\.[A-Za-z0-9_]+", provider_dependencies_match.group(1)) if provider_dependencies_match else []
+    expected_provider_dependencies = {
+        "terraform_data.remove_legacy_iam_bindings",
+        "google_project_iam_member.infra_drift_viewer",
+        "google_storage_bucket_iam_member.infra_drift_state_reader",
+        "google_secret_manager_secret_iam_member.infra_drift_price_ids_accessor",
+        "google_secret_manager_secret_iam_member.infra_drift_price_ids_viewer",
+        "google_secret_manager_secret_iam_member.billing_catalog_price_ids_writer",
+        "google_secret_manager_secret_iam_member.billing_catalog_resend_api_key_reader",
+        "google_secret_manager_secret_iam_member.billing_catalog_stripe_api_key_reader",
+        "google_secret_manager_secret_iam_member.deploy_billing_price_ids_accessor",
+        "google_secret_manager_secret_iam_member.deploy_billing_price_ids_viewer",
+    }
+    if set(provider_dependencies_raw) != expected_provider_dependencies or len(provider_dependencies_raw) != len(expected_provider_dependencies):
+        errors.append("bootstrap WIF provider can advance before non-authority prerequisites")
     if top_level_assignment_values(provider, "jwks_json") or top_level_assignment_values(provider, "allowed_audiences"):
         errors.append("bootstrap WIF provider may not set top-level JWKS or audiences")
     if not has_exact_top_level_assignment(provider, "disabled", "false"):
@@ -797,8 +811,7 @@ def check(root):
     for name, (service_account, member) in hop_bindings.items():
         block = resource_block(bootstrap, "google_service_account_iam_member", name) or ""
         lifecycle = top_level_block(block, "lifecycle") or ""
-        needs_replacement_safety = name != "infra_drift_wif"
-        if not has_exact_top_level_assignment(block, "service_account_id", service_account) or not has_exact_top_level_assignment(block, "role", '"roles/iam.workloadIdentityUser"') or not has_exact_top_level_assignment(block, "member", member) or not has_exact_top_level_assignment(block, "depends_on", "[google_iam_workload_identity_pool_provider.github]") or top_level_block(block, "condition") or (needs_replacement_safety and not has_exact_top_level_assignment(lifecycle, "create_before_destroy", "true")):
+        if not has_exact_top_level_assignment(block, "service_account_id", service_account) or not has_exact_top_level_assignment(block, "role", '"roles/iam.workloadIdentityUser"') or not has_exact_top_level_assignment(block, "member", member) or not has_exact_top_level_assignment(block, "depends_on", "[google_iam_workload_identity_pool_provider.github]") or top_level_block(block, "condition") or not has_exact_top_level_assignment(lifecycle, "create_before_destroy", "true"):
             errors.append(f"bootstrap workflow-scoped WIF binding drifted or risks lockout: {name}")
     for name, (service_account, member) in rollback_bindings.items():
         block = resource_block(bootstrap, "google_service_account_iam_member", name) or ""

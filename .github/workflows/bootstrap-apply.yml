@@ -144,6 +144,31 @@ jobs:
             exit 1
           }
 
+      - name: Validate drift custom-role permissions
+        run: |
+          set -euo pipefail
+          gcloud iam list-testable-permissions \
+            "//cloudresourcemanager.googleapis.com/projects/$PROJECT_ID" \
+            --format=json > "$RUNNER_TEMP/testable-permissions.json"
+          python3 - "$RUNNER_TEMP/testable-permissions.json" <<'PY'
+          import json, pathlib, re, sys
+          source = pathlib.Path("infra/bootstrap/ci_apply.tf").read_text(encoding="utf-8")
+          role = re.search(r'(?ms)resource "google_project_iam_custom_role" "infra_drift" \{(.*?)^\}', source)
+          permissions = re.search(r'(?ms)^\s*permissions\s*=\s*\[(.*?)^\s*\]', role.group(1) if role else "")
+          requested = set(re.findall(r'"([a-zA-Z0-9.]+)"', permissions.group(1) if permissions else ""))
+          raw = json.load(open(sys.argv[1], encoding="utf-8"))
+          if not requested or not isinstance(raw, list):
+              raise SystemExit("drift permission validation input is malformed")
+          supported = {
+              item.get("name") for item in raw
+              if isinstance(item, dict) and item.get("customRolesSupportLevel") != "NOT_SUPPORTED"
+          }
+          missing = sorted(requested - supported)
+          if missing:
+              raise SystemExit(f"drift custom role has unsupported permissions: {missing}")
+          print(f"validated {len(requested)} drift custom-role permissions")
+          PY
+
       - name: Create and inspect one saved bootstrap plan
         working-directory: infra/bootstrap
         run: |
@@ -182,6 +207,7 @@ jobs:
               "google_service_account_iam_member.deploy_runtime_wif",
               "google_service_account_iam_member.bootstrap_apply_wif",
               "google_service_account_iam_member.billing_catalog_wif_main",
+              "google_service_account_iam_member.infra_drift_wif",
           }
           cleanup_replacements = {
               "terraform_data.remove_legacy_iam_bindings",
@@ -196,6 +222,7 @@ jobs:
               "google_storage_bucket_iam_member.deploy_billing_state_reader",
           }
           unchanged = {(), ("no-op",), ("read",)}
+          cleanup_retry_actions = {("create", "delete"), ("delete", "create")}
           bad = []
           for item in plan.get("resource_changes", []):
               address = item.get("address")
@@ -213,7 +240,9 @@ jobs:
                       continue
                   if address in rollback_creates and actions == ("create",):
                       continue
-                  if address in cleanup_replacements and actions == ("delete", "create"):
+                  if address in cleanup_replacements and actions in cleanup_retry_actions:
+                      continue
+                  if address in normal_replacements and actions in {("create",), ("create", "delete")}:
                       continue
                   bad.append((address, actions))
                   continue
@@ -221,7 +250,7 @@ jobs:
                   continue
               if actions == ("create", "delete") and address in normal_replacements:
                   continue
-              if actions == ("delete", "create") and address in cleanup_replacements:
+              if address in cleanup_replacements and actions in cleanup_retry_actions:
                   continue
               if actions == ("delete",) and address in normal_deletes:
                   continue

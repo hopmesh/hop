@@ -321,7 +321,8 @@ expect("drift role excludes BigQuery table data", lambda r: mutate_block(r, "inf
 expect("platform rollback WIF remains phase-bound", lambda r: mutate_block(r, "infra/bootstrap/runtime_deploy.tf", "google_service_account_iam_member", "deploy_runtime_wif_platform_rollback", 'count              = var.github_authority_phase == "handoff" ? 1 : 0', "count              = 1"))
 expect("runtime WIF replacement creates before destroy", lambda r: mutate_block(r, "infra/bootstrap/runtime_deploy.tf", "google_service_account_iam_member", "deploy_runtime_wif", "create_before_destroy = true", "create_before_destroy = false"))
 expect("runtime WIF waits for workflow mapping", lambda r: mutate_block(r, "infra/bootstrap/runtime_deploy.tf", "google_service_account_iam_member", "deploy_runtime_wif", "depends_on = [google_iam_workload_identity_pool_provider.github]", "depends_on = []"))
-expect("WIF provider waits for retired authority cleanup", lambda r: mutate_block(r, "infra/bootstrap/billing.tf", "google_iam_workload_identity_pool_provider", "github", "depends_on = [terraform_data.remove_legacy_iam_bindings]", "depends_on = []"))
+expect("drift WIF retry creates before destroy", lambda r: mutate_block(r, "infra/bootstrap/ci_apply.tf", "google_service_account_iam_member", "infra_drift_wif", "create_before_destroy = true", "create_before_destroy = false"))
+expect("WIF provider waits for every non-authority prerequisite", lambda r: mutate_block(r, "infra/bootstrap/billing.tf", "google_iam_workload_identity_pool_provider", "github", "google_project_iam_member.infra_drift_viewer,", ""))
 expect("planned legacy IAM cleanup script pinned", lambda r: append(r, "infra/bootstrap/remove_legacy_state_bindings.py", "\n# hostile drift\n"))
 expect("planned legacy IAM cleanup command pinned", lambda r: mutate_block(r, "infra/bootstrap/ci_apply.tf", "terraform_data", "remove_legacy_iam_bindings", 'command = "python3 ${path.module}/remove_legacy_state_bindings.py"', 'command = "true"'))
 expect("rollback billing reader cannot widen", lambda r: mutate_block(r, "infra/bootstrap/billing.tf", "google_storage_bucket_iam_member", "deploy_billing_state_reader", '/objects/billing/', '/objects/'))
@@ -387,7 +388,8 @@ finally:
     os.environ.update(original_environment)
 removals = [call for call in calls if "remove-iam-policy-binding" in call]
 assert len(removals) == 22, removals
-assert sum("--condition" in call for call in removals) == 2, removals
+assert sum("--condition" in call for call in removals) == 3, removals
+assert sum("--condition" in call and call[call.index("--condition") + 1] == "None" for call in removals) == 1, removals
 assert sum(call[:3] == ("gcloud", "projects", "remove-iam-policy-binding") for call in removals) == 19, removals
 disables = [call for call in calls if call[:4] == ("gcloud", "iam", "service-accounts", "disable")]
 assert len(disables) == 1, disables
