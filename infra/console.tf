@@ -58,11 +58,12 @@ resource "google_cloud_run_v2_service" "accountd" {
 
     precondition {
       condition = nonsensitive(try(
-        toset(keys(local.billing_prices)) == toset(["base", "reach", "observability"]) &&
-        alltrue([for value in values(local.billing_prices) : can(regex("^price_[A-Za-z0-9]+$", value))]),
+        toset(keys(local.billing_prices)) == toset(["base", "reach", "observability", "private_source_sha"]) &&
+        alltrue([for key in ["base", "reach", "observability"] : can(regex("^price_[A-Za-z0-9]+$", local.billing_prices[key]))]) &&
+        local.billing_prices.private_source_sha == var.private_source_sha,
         false
       ))
-      error_message = "hop-billing-price-ids must contain exactly base, reach, and observability Stripe price ids."
+      error_message = "hop-billing-price-ids must contain the three Stripe price ids produced from the pinned private source commit."
     }
   }
 

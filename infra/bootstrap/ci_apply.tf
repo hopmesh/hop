@@ -49,12 +49,19 @@ resource "google_service_account" "bootstrap_apply" {
   depends_on = [google_project_service.this["iam.googleapis.com"]]
 }
 
-# Both the plan and apply jobs run from refs/heads/main (no GitHub environment), so one exact subject
-# binding covers them. The apply job is gated by workflow_dispatch confirm=apply, not by an environment.
+# Bootstrap authority is bound to the exact canonical workflow. Explicit rollback temporarily restores
+# only platform's reviewed handoff workflow so rollback remains executable without admitting other jobs.
 resource "google_service_account_iam_member" "bootstrap_apply_wif" {
   service_account_id = google_service_account.bootstrap_apply.name
   role               = "roles/iam.workloadIdentityUser"
-  member             = local.github_main_wif_member
+  member             = local.github_workflow_members.bootstrap
+}
+
+resource "google_service_account_iam_member" "bootstrap_apply_wif_platform_rollback" {
+  count              = var.github_authority_phase == "handoff" ? 1 : 0
+  service_account_id = google_service_account.bootstrap_apply.name
+  role               = "roles/iam.workloadIdentityUser"
+  member             = local.platform_rollback_workflow_members.bootstrap
 }
 
 resource "google_project_iam_member" "bootstrap_apply" {
@@ -62,6 +69,51 @@ resource "google_project_iam_member" "bootstrap_apply" {
   project  = var.project_id
   role     = each.value
   member   = "serviceAccount:${google_service_account.bootstrap_apply.email}"
+}
+
+# Drift gets a separate read-only identity. It can refresh the runtime plan, read the narrowed price
+# map, and read runtime state. It cannot mutate IAM, services, state, secrets, or application data.
+resource "google_service_account" "infra_drift" {
+  account_id   = "hop-infra-drift"
+  display_name = "GitHub Actions: read-only runtime infrastructure drift"
+
+  depends_on = [google_project_service.this["iam.googleapis.com"]]
+}
+
+resource "google_service_account_iam_member" "infra_drift_wif" {
+  service_account_id = google_service_account.infra_drift.name
+  role               = "roles/iam.workloadIdentityUser"
+  member             = local.github_workflow_members.drift
+}
+
+resource "google_project_iam_member" "infra_drift_viewer" {
+  project = var.project_id
+  role    = "roles/viewer"
+  member  = "serviceAccount:${google_service_account.infra_drift.email}"
+}
+
+resource "google_storage_bucket_iam_member" "infra_drift_state_reader" {
+  bucket = var.runtime_state_bucket
+  role   = "roles/storage.objectViewer"
+  member = "serviceAccount:${google_service_account.infra_drift.email}"
+
+  condition {
+    title       = "runtime-drift-state-read-only"
+    description = "The drift identity may list the backend and read only runtime state objects."
+    expression  = "resource.name == \"projects/_/buckets/${var.runtime_state_bucket}\" || resource.name.startsWith(\"projects/_/buckets/${var.runtime_state_bucket}/objects/${var.runtime_state_prefix}/\")"
+  }
+}
+
+resource "google_secret_manager_secret_iam_member" "infra_drift_price_ids_accessor" {
+  secret_id = google_secret_manager_secret.billing_price_ids.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.infra_drift.email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "infra_drift_price_ids_viewer" {
+  secret_id = google_secret_manager_secret.billing_price_ids.secret_id
+  role      = "roles/secretmanager.viewer"
+  member    = "serviceAccount:${google_service_account.infra_drift.email}"
 }
 
 # Secret containers and their IAM bindings, WITHOUT any access to version payloads. Bootstrap creates
@@ -147,4 +199,14 @@ output "bootstrap_wif_provider" {
 output "bootstrap_wif_service_account" {
   description = "Service account impersonated by the bootstrap-apply workflow (repo variable GCP_BOOTSTRAP_SERVICE_ACCOUNT)."
   value       = google_service_account.bootstrap_apply.email
+}
+
+output "infra_drift_wif_provider" {
+  description = "Workload identity provider for infra-drift (repo variable GCP_DRIFT_WIF_PROVIDER)."
+  value       = google_iam_workload_identity_pool_provider.github.name
+}
+
+output "infra_drift_wif_service_account" {
+  description = "Read-only service account for infra-drift (repo variable GCP_DRIFT_SERVICE_ACCOUNT)."
+  value       = google_service_account.infra_drift.email
 }

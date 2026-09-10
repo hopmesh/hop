@@ -119,7 +119,17 @@ locals {
     handoff = "assertion.repository == \"${local.github_platform_repository}\" || assertion.repository == \"${local.github_hop_repository}\""
     hop     = "assertion.repository == \"${local.github_hop_repository}\""
   }
-  github_main_wif_member = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.ref/refs/heads/main"
+  github_workflow_members = {
+    runtime   = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.workflow/${local.github_hop_repository}/.github/workflows/runtime-deploy.yml@refs/heads/main"
+    bootstrap = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.workflow/${local.github_hop_repository}/.github/workflows/bootstrap-apply.yml@refs/heads/main"
+    billing   = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.workflow/${local.github_hop_repository}/.github/workflows/billing-catalog.yml@refs/heads/main"
+    drift     = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.workflow/${local.github_hop_repository}/.github/workflows/infra-drift.yml@refs/heads/main"
+  }
+  platform_rollback_workflow_members = {
+    runtime   = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.workflow/${local.github_platform_repository}/.github/workflows/runtime-deploy.yml@refs/heads/main"
+    bootstrap = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.workflow/${local.github_platform_repository}/.github/workflows/handoff-deploy-authority.yml@refs/heads/main"
+    billing   = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.workflow/${local.github_platform_repository}/.github/workflows/billing-catalog.yml@refs/heads/main"
+  }
 }
 
 resource "google_iam_workload_identity_pool" "github" {
@@ -144,6 +154,7 @@ resource "google_iam_workload_identity_pool_provider" "github" {
     "google.subject"       = "assertion.sub"
     "attribute.repository" = "assertion.repository"
     "attribute.ref"        = "assertion.ref"
+    "attribute.workflow"   = "assertion.workflow_ref"
   }
 
   attribute_condition = local.github_repository_conditions[var.github_authority_phase]
@@ -161,21 +172,41 @@ resource "google_service_account" "billing_catalog_apply" {
   depends_on = [google_project_service.this["iam.googleapis.com"]]
 }
 
-# Billing PR validation is credential-free. Only canonical main of hopmesh/hop may impersonate the
-# catalog identity for a manual or scheduled mutation.
-# The provider fixes repository authority to hopmesh/hop. This shared main-ref principal is safe for
-# all three deploy identities: pull-request refs do not match, and no other repository can pass the
-# provider condition. Billing PR validation is credential-free; mutations run only from main.
+# Billing PR validation is credential-free. The catalog identity accepts only the exact canonical
+# billing workflow on main. Explicit rollback temporarily restores the exact platform workflow.
 resource "google_service_account_iam_member" "billing_catalog_wif_main" {
   service_account_id = google_service_account.billing_catalog_apply.name
   role               = "roles/iam.workloadIdentityUser"
-  member             = local.github_main_wif_member
+  member             = local.github_workflow_members.billing
+}
+
+resource "google_service_account_iam_member" "billing_catalog_wif_platform_rollback" {
+  count              = var.github_authority_phase == "handoff" ? 1 : 0
+  service_account_id = google_service_account.billing_catalog_apply.name
+  role               = "roles/iam.workloadIdentityUser"
+  member             = local.platform_rollback_workflow_members.billing
 }
 
 resource "google_secret_manager_secret_iam_member" "billing_catalog_price_ids_writer" {
   secret_id = google_secret_manager_secret.billing_price_ids.secret_id
   role      = "roles/secretmanager.secretVersionAdder"
   member    = "serviceAccount:${google_service_account.billing_catalog_apply.email}"
+}
+
+# The catalog apply reads the two vendor credentials it passes to the private providers. These are
+# container-scoped read grants; it cannot read any other project secret.
+resource "google_secret_manager_secret_iam_member" "billing_catalog_stripe_api_key_reader" {
+  secret_id = google_secret_manager_secret.stripe_api_key.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.billing_catalog_apply.email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "billing_catalog_resend_api_key_reader" {
+  secret_id = "hop-resend-apikey"
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.billing_catalog_apply.email}"
+
+  depends_on = [google_project_service.this["secretmanager.googleapis.com"]]
 }
 
 resource "google_secret_manager_secret_iam_member" "deploy_billing_price_ids_accessor" {
@@ -188,6 +219,21 @@ resource "google_secret_manager_secret_iam_member" "deploy_billing_price_ids_vie
   secret_id = google_secret_manager_secret.billing_price_ids.secret_id
   role      = "roles/secretmanager.viewer"
   member    = "serviceAccount:${google_service_account.deploy.email}"
+}
+
+# Explicit rollback restores the one read-only grant the pinned platform runtime still needs. The
+# terminal hop phase removes it again and reads only the narrowed billing price secret.
+resource "google_storage_bucket_iam_member" "deploy_billing_state_reader" {
+  count  = var.github_authority_phase == "handoff" ? 1 : 0
+  bucket = var.runtime_state_bucket
+  role   = "roles/storage.objectViewer"
+  member = "serviceAccount:${google_service_account.deploy.email}"
+
+  condition {
+    title       = "billing-state-read-only"
+    description = "The deployer may read (never write) the isolated billing state for price ids."
+    expression  = "resource.name.startsWith(\"projects/_/buckets/${var.runtime_state_bucket}/objects/billing/\")"
+  }
 }
 
 # The catalog identity writes ONE secret: the Stripe webhook signing secret it just created

@@ -11,7 +11,7 @@ import yaml
 
 WORKFLOW = ".github/workflows/runtime-deploy.yml"
 PUBLIC_BUILD = "Build and push public relay and example images first"
-TOKEN_GATE = "Require the private checkout token only after public builds"
+TOKEN_GATE = "Create read-only private source token after public builds"
 PRIVATE_CHECKOUT = "Check out pinned private source after public builds"
 STAGE = "Verify and stage pinned commercial source"
 PRIVATE_BUILD = "Build and push pinned account and console images"
@@ -74,8 +74,8 @@ def check(root: Path) -> list[str]:
     deploy = jobs["deploy"]
     if validate.get("runs-on") != "ubuntu-latest" or deploy.get("runs-on") != "ubuntu-latest":
         errors.append("runtime jobs must use GitHub-hosted ubuntu-latest")
-    if deploy.get("environment") != "release":
-        errors.append("runtime deploy must use the protected release environment")
+    if deploy.get("environment") != "component-sync":
+        errors.append("runtime deploy must use the protected component-sync environment")
     validate_text = yaml.safe_dump(validate, sort_keys=False)
     if "secrets." in validate_text or "id-token" in validate_text:
         errors.append("credential-free validation job references a secret or token")
@@ -107,8 +107,8 @@ def check(root: Path) -> list[str]:
     if deploy.get("continue-on-error", "false") not in (None, "false"):
         errors.append("runtime deploy job may not tolerate failure")
     job_env = deploy.get("env", {})
-    if any("HOP_SYNC_TOKEN" in str(value) for value in job_env.values()):
-        errors.append("private source token is exposed at job scope")
+    if any("HOP_SYNC" in str(value) for value in job_env.values()):
+        errors.append("private source credential is exposed at job scope")
 
     deploy_steps = steps(deploy)
     names = [step.get("name") for step in deploy_steps]
@@ -124,6 +124,7 @@ def check(root: Path) -> list[str]:
         return errors
 
     public = named(deploy_steps, PUBLIC_BUILD).get("run", "")
+    token_step = named(deploy_steps, TOKEN_GATE)
     private = named(deploy_steps, PRIVATE_BUILD).get("run", "")
     public_commands = (
         'relay="$(build_push hop-relayd services/hop-relayd/Dockerfile /tmp/relay-push.log)"',
@@ -139,18 +140,33 @@ def check(root: Path) -> list[str]:
         errors.append("public image step includes commercial image names")
     if any(private.count(command) != 1 for command in private_commands) or private.count("docker build --no-cache --pull") != 1:
         errors.append("private image step does not build exactly accountd and console without cache")
+    for required in ('>"${log%.log}-build.log" 2>&1', 'docker push "$tagged" >"$log" 2>&1', "detailed output withheld"):
+        if required not in private:
+            errors.append(f"private image logs are not withheld: {required}")
+    if "| tee" in private or "cat " in private:
+        errors.append("private image step can emit captured commercial build output")
+    if token_step.get("uses") != "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1":
+        errors.append("private source token action is not immutable")
+    expected_token = {
+        "app-id": "${{ secrets.HOP_SYNC_APP_ID }}",
+        "private-key": "${{ secrets.HOP_SYNC_APP_PRIVATE_KEY }}",
+        "owner": "hopmesh",
+        "repositories": "platform",
+        "permission-contents": "read",
+    }
+    if token_step.get("with") != expected_token:
+        errors.append("private source token is not repository-scoped read-only")
 
     for index, step in enumerate(deploy_steps):
-        text = yaml.safe_dump(step, sort_keys=False)
-        if "HOP_SYNC_TOKEN" in text and index < order[1]:
-            errors.append("private source token is reachable before public image builds finish")
+        if "HOP_SYNC_APP" in yaml.safe_dump(step, sort_keys=False) and index != order[1]:
+            errors.append("private source App credential is reachable outside its token-mint step")
         if step.get("continue-on-error", "false") not in (None, "false"):
             errors.append(f"runtime step tolerates failure: {step.get('name', step.get('id'))}")
     checkout = named(deploy_steps, PRIVATE_CHECKOUT).get("with", {})
     expected_checkout = {
         "repository": "${{ steps.pin.outputs.repository }}",
         "ref": "${{ steps.pin.outputs.commit }}",
-        "token": "${{ secrets.HOP_SYNC_TOKEN }}",
+        "token": "${{ steps.private-source-token.outputs.token }}",
         "path": "private",
         "fetch-depth": "1",
         "persist-credentials": "false",
@@ -177,10 +193,18 @@ def check(root: Path) -> list[str]:
         'labels.get("hop-source-sha") != hop_sha',
         'labels.get("hop-private-source-sha") != private_sha',
         'required = {"hop-example", "hop-accountd", "hop-console"}',
+        "gcloud run services list",
     ):
         if readback.count(required) != 1:
             errors.append(f"runtime provenance readback missing exact check: {required}")
+    price = named(deploy_steps, "Resolve the highest enabled billing price id version").get("run", "")
+    if "gcloud secrets versions list hop-billing-price-ids" not in price or "curl " in price:
+        errors.append("runtime billing price version lookup bypasses the non-executable gcloud path")
     workflow_text = path.read_text(encoding="utf-8")
+    if "HOP_SYNC_TOKEN" in workflow_text:
+        errors.append("runtime workflow retains the broad organization PAT")
+    if "secretmanager.googleapis.com" in workflow_text or "run.googleapis.com" in workflow_text:
+        errors.append("runtime workflow downloads API JSON through an executable fetch surface")
     if "self-hosted" in workflow_text:
         errors.append("public runtime workflow may not use a self-hosted runner")
     return errors

@@ -131,10 +131,9 @@ jobs:
   # can see contradicts the manifest. `--verify-live` answers the same question through the API, but it
   # needs admin:org plus secrets read, which nothing here has, so it stays an operator command.
   # tools/workflow-secrets-guard.py requires every declared name to appear in one of these jobs.
-  # BOOTSTRAP_TFVARS, STRIPE_API_KEY and RESEND_API_KEY used to be asserted here. They belong to the
-  # deploy and billing workflows, which live in hopmesh/platform now, and they are not readable from
-  # this repository. They were dropped from tools/workflow-secrets.json in the same change, so the
-  # static guard's coverage rule still holds: every declared name is asserted by a job below.
+  # The broad organization HOP_SYNC_TOKEN is retired. Private source checkout, changelog, automerge,
+  # mirror sync, and release jobs mint short-lived repository-scoped tokens from the existing
+  # component-sync GitHub App instead.
   secret-presence:
     name: Declared org and repository secrets are set
     runs-on: ubuntu-latest
@@ -145,7 +144,6 @@ jobs:
         env:
           BRANCH_PROTECTION_TOKEN: ${{ secrets.BRANCH_PROTECTION_TOKEN != '' }}
           MIRROR_SECRET_AUDIT_TOKEN: ${{ secrets.MIRROR_SECRET_AUDIT_TOKEN != '' }}
-          HOP_SYNC_TOKEN: ${{ secrets.HOP_SYNC_TOKEN != '' }}
         run: python3 tools/workflow-secrets-guard.py --assert-present organization repository
 
   # The `release` environment admits only `main` (a deployment branch policy), so from any other ref

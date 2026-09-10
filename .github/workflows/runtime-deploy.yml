@@ -86,7 +86,7 @@ jobs:
        github.ref == 'refs/heads/main' &&
        inputs.confirm == 'deploy hopmesh/hop main')
     runs-on: ubuntu-latest
-    environment: release
+    environment: component-sync
     env:
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
       AR_REGION: us-central1
@@ -199,17 +199,22 @@ jobs:
           echo "relay=$relay" >> "$GITHUB_OUTPUT"
           echo "example=$example" >> "$GITHUB_OUTPUT"
 
-      - name: Require the private checkout token only after public builds
-        env:
-          PRIVATE_SOURCE_TOKEN: ${{ secrets.HOP_SYNC_TOKEN }}
-        run: test -n "$PRIVATE_SOURCE_TOKEN" || { echo "::error::HOP_SYNC_TOKEN is not configured"; exit 1; }
+      - id: private-source-token
+        name: Create read-only private source token after public builds
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.HOP_SYNC_APP_ID }}
+          private-key: ${{ secrets.HOP_SYNC_APP_PRIVATE_KEY }}
+          owner: hopmesh
+          repositories: platform
+          permission-contents: read
 
       - name: Check out pinned private source after public builds
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ steps.pin.outputs.repository }}
           ref: ${{ steps.pin.outputs.commit }}
-          token: ${{ secrets.HOP_SYNC_TOKEN }}
+          token: ${{ steps.private-source-token.outputs.token }}
           path: private
           fetch-depth: 1
           persist-credentials: false
@@ -235,8 +240,14 @@ jobs:
           build_push() {
             local image="$1" dockerfile="$2" log="$3"
             local tagged="${registry}/${image}:${DEPLOY_SHA}"
-            docker build --no-cache --pull -f "$dockerfile" -t "$tagged" .
-            docker push "$tagged" | tee "$log"
+            docker build --no-cache --pull -f "$dockerfile" -t "$tagged" . >"${log%.log}-build.log" 2>&1 || {
+              echo "::error::private commercial image build failed; detailed output withheld"
+              exit 1
+            }
+            docker push "$tagged" >"$log" 2>&1 || {
+              echo "::error::private commercial image push failed; detailed output withheld"
+              exit 1
+            }
             local digest
             digest="$(python3 - "$log" <<'PY'
           import re, sys
@@ -256,13 +267,14 @@ jobs:
 
       - id: price_version
         name: Resolve the highest enabled billing price id version
-        env:
-          ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
         run: |
           set -euo pipefail
-          curl -fsS -H "Authorization: Bearer $ACCESS_TOKEN" \
-            "https://secretmanager.googleapis.com/v1/projects/${PROJECT_ID}/secrets/hop-billing-price-ids/versions?pageSize=100&filter=state%3DENABLED" \
-            -o /tmp/price-versions.json
+          gcloud secrets versions list hop-billing-price-ids --project "$PROJECT_ID" \
+            --filter='state=ENABLED' --format=json \
+            > /tmp/price-versions.json 2>"$RUNNER_TEMP/price-version-list.log" || {
+              echo "::error::enabled billing price versions could not be listed"
+              exit 1
+            }
           version="$(python3 - /tmp/price-versions.json <<'PY'
           import json, re, sys
           data = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -364,13 +376,14 @@ jobs:
       - name: Prove every live runtime came from these commits
         if: steps.apply.outputs.applied == 'true'
         env:
-          ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
           PRIVATE_SOURCE_SHA: ${{ steps.pin.outputs.commit }}
         run: |
           set -euo pipefail
-          curl -fsS -H "Authorization: Bearer $ACCESS_TOKEN" \
-            "https://run.googleapis.com/v2/projects/${PROJECT_ID}/locations/-/services" \
-            -o /tmp/runtime-services.json
+          gcloud run services list --project "$PROJECT_ID" --platform managed --format=json \
+            > /tmp/runtime-services.json 2>"$RUNNER_TEMP/runtime-readback.log" || {
+              echo "::error::live runtime services could not be read back"
+              exit 1
+            }
           python3 - /tmp/runtime-services.json "$DEPLOY_SHA" "$PRIVATE_SOURCE_SHA" "$RELAYS_ENABLED" <<'PY'
           import json, sys
           data = json.load(open(sys.argv[1], encoding="utf-8"))

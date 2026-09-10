@@ -45,8 +45,8 @@ expect("wrong upstream repository rejected", "head_repository.full_name == 'hopm
 expect("configuration cannot skip deploy job", "github.repository == 'hopmesh/hop'", "github.repository == 'hopmesh/hop' && vars.GCP_PROJECT_ID != ''")
 expect("guard cannot be no-op comment", "run: python3 tools/runtime-deploy-guard.py", "run: true # python3 tools/runtime-deploy-guard.py")
 expect("guard cannot tolerate failure", "run: python3 tools/runtime-deploy-guard.py", "run: python3 tools/runtime-deploy-guard.py || true")
-expect("validation cannot access private token", "name: Validate OpenTofu roots without cloud credentials", "name: Validate OpenTofu roots without cloud credentials\n        env:\n          PRIVATE_SOURCE_TOKEN: ${{ secrets.HOP_SYNC_TOKEN }}")
-expect("private token cannot be job scoped", "RUNTIME_WIF_PROVIDER: ${{ vars.GCP_RUNTIME_WIF_PROVIDER }}", "PRIVATE_SOURCE_TOKEN: ${{ secrets.HOP_SYNC_TOKEN }}\n      RUNTIME_WIF_PROVIDER: ${{ vars.GCP_RUNTIME_WIF_PROVIDER }}")
+expect("validation cannot access private token", "name: Validate OpenTofu roots without cloud credentials", "name: Validate OpenTofu roots without cloud credentials\n        env:\n          PRIVATE_SOURCE_KEY: ${{ secrets.HOP_SYNC_APP_PRIVATE_KEY }}")
+expect("private credential cannot be job scoped", "RUNTIME_WIF_PROVIDER: ${{ vars.GCP_RUNTIME_WIF_PROVIDER }}", "PRIVATE_SOURCE_KEY: ${{ secrets.HOP_SYNC_APP_PRIVATE_KEY }}\n      RUNTIME_WIF_PROVIDER: ${{ vars.GCP_RUNTIME_WIF_PROVIDER }}")
 expect("private checkout cannot use main", "ref: ${{ steps.pin.outputs.commit }}", "ref: main")
 expect("private checkout cannot tolerate failure", "name: Check out pinned private source after public builds", "name: Check out pinned private source after public builds\n        continue-on-error: true")
 expect("public images built before commercial names", "build_push hop-relayd services/hop-relayd/Dockerfile", "build_push hop-accountd services/hop-accountd/Dockerfile")
@@ -58,6 +58,10 @@ expect("readback requires private source label", 'labels.get("hop-private-source
 expect("public workflow rejects self-hosted", "runs-on: ubuntu-latest", "runs-on: [self-hosted, macOS]", first=True)
 expect("pull request target prohibited", "pull_request:", "pull_request_target:")
 
-expect("runtime deploy requires release environment", "environment: release", "environment: component-sync")
+expect("runtime deploy requires component-sync environment", "environment: component-sync", "environment: release")
+expect("private source token remains read-only", "permission-contents: read", "permission-contents: write")
+expect("private checkout uses minted App token", "token: ${{ steps.private-source-token.outputs.token }}", "token: ${{ github.token }}")
+expect("private build output remains withheld", 'docker push "$tagged" >"$log" 2>&1', 'docker push "$tagged" | tee "$log"')
+expect("price version lookup uses gcloud", "gcloud secrets versions list hop-billing-price-ids", "curl https://secretmanager.googleapis.com")
 print(f"runtime deploy guard tests passed: {passed}")
 PY

@@ -141,7 +141,7 @@ expect("billing price version cannot be latest", lambda r: replace(r, "infra/con
 expect("billing price secret id pinned", lambda r: replace(r, "infra/console.tf", 'secret  = "hop-billing-price-ids"', 'secret  = "other-secret"'))
 expect("runtime data source omission rejected", lambda r: remove_data(r, "infra/console.tf", "google_secret_manager_secret_version", "billing_price_ids"))
 expect("hop phase cannot admit platform", lambda r: replace(r, "infra/bootstrap/billing.tf", 'hop     = "assertion.repository == \\\"${local.github_hop_repository}\\\""', 'hop     = "assertion.repository == \\\"${local.github_platform_repository}\\\""'))
-expect("shared WIF member main ref", lambda r: replace(r, "infra/bootstrap/billing.tf", "attribute.ref/refs/heads/main", "attribute.repository/hopmesh/hop"))
+expect("runtime WIF member names exact workflow", lambda r: replace(r, "infra/bootstrap/billing.tf", 'runtime   = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.workflow/${local.github_hop_repository}/.github/workflows/runtime-deploy.yml@refs/heads/main"', 'runtime   = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.workflow/${local.github_hop_repository}/.github/workflows/other.yml@refs/heads/main"'))
 expect("github repository fixed", lambda r: replace(r, "infra/bootstrap/variables.tf", 'default     = "hopmesh/hop"', 'default     = "hopmesh/platform"'))
 expect("runtime state bucket fixed", lambda r: replace(r, "infra/bootstrap/variables.tf", 'default     = "hop-mesh-tfstate"', 'default     = "other-bucket"'))
 
@@ -177,16 +177,15 @@ resource "google_secret_manager_secret_iam_member" "extra_price_writer" {
 expect("price VersionAdder grant exclusive", extra_price_writer)
 
 
-def restore_billing_state_reader(repo):
-    append(repo, "infra/bootstrap/console.tf", '''
-resource "google_storage_bucket_iam_member" "deploy_billing_state_reader" {
-  bucket = var.runtime_state_bucket
-  role   = "roles/storage.objectViewer"
-  member = "serviceAccount:${google_service_account.deploy.email}"
-}
-''')
-expect("hop-deploy cannot read private billing state", restore_billing_state_reader)
-expect("billing state prefix cannot widen", lambda r: replace(r, "infra/bootstrap/billing.tf", "/objects/billing/", "/objects/"))
+expect("terminal hop phase removes private billing state read", lambda r: replace(r, "infra/bootstrap/billing.tf", 'count  = var.github_authority_phase == "handoff" ? 1 : 0', "count  = 1"))
+
+def widen_billing_state(repo):
+    path = repo / "infra/bootstrap/billing.tf"
+    text = path.read_text()
+    block = guard.resource_block(text, "google_storage_bucket_iam_member", "billing_catalog_state")
+    bad = block.replace('/objects/billing/', '/objects/')
+    path.write_text(text.replace(block, bad, 1))
+expect("billing state prefix cannot widen", widen_billing_state)
 expect("bootstrap terraform.tfvars rejected", lambda r: (r / "infra/bootstrap/terraform.tfvars").write_text('github_repository = "hopmesh/hop"\n'))
 expect("block comment spoof rejected", lambda r: append(r, "infra/bootstrap/billing.tf", "\n/* expected assignment = good */\n"))
 
@@ -294,6 +293,30 @@ terraform {
 }
 ''')
 expect("heredoc cannot spoof canonical runtime backend", runtime_backend_heredoc_spoof)
+
+def seed_member_comment_spoof(repo):
+    path = repo / "infra/bootstrap/iam.tf"
+    text = path.read_text()
+    safe = '  member    = "serviceAccount:${google_service_account.relay.email}"'
+    bad = f'# {safe}\n  member    = "serviceAccount:attacker@example.com"'
+    path.write_text(text.replace(safe, bad, 1))
+expect("commented relay identity cannot spoof seed accessor", seed_member_comment_spoof)
+
+expect("WIF workflow claim mapping pinned", lambda r: replace(r, "infra/bootstrap/billing.tf", '"attribute.workflow"   = "assertion.workflow_ref"', '"attribute.workflow"   = "assertion.actor"'))
+
+def mutate_block(repo, relative, kind, name, old, new):
+    path = repo / relative
+    text = path.read_text()
+    block = guard.resource_block(text, kind, name)
+    bad = block.replace(old, new, 1)
+    path.write_text(text.replace(block, bad, 1))
+
+expect("catalog Stripe reader cannot broaden", lambda r: mutate_block(r, "infra/bootstrap/billing.tf", "google_secret_manager_secret_iam_member", "billing_catalog_stripe_api_key_reader", 'role      = "roles/secretmanager.secretAccessor"', 'role      = "roles/secretmanager.admin"'))
+expect("drift project role remains read-only", lambda r: mutate_block(r, "infra/bootstrap/ci_apply.tf", "google_project_iam_member", "infra_drift_viewer", 'role    = "roles/viewer"', 'role    = "roles/editor"'))
+expect("platform rollback WIF remains phase-bound", lambda r: mutate_block(r, "infra/bootstrap/runtime_deploy.tf", "google_service_account_iam_member", "deploy_runtime_wif_platform_rollback", 'count              = var.github_authority_phase == "handoff" ? 1 : 0', "count              = 1"))
+expect("rollback billing reader cannot widen", lambda r: mutate_block(r, "infra/bootstrap/billing.tf", "google_storage_bucket_iam_member", "deploy_billing_state_reader", '/objects/billing/', '/objects/'))
+expect("price ids must match private source", lambda r: replace(r, "infra/console.tf", "local.billing_prices.private_source_sha == var.private_source_sha", "true"))
+expect("drift inputs include private source provenance", lambda r: replace(r, "infra/outputs.tf", "private_source_sha        = var.private_source_sha", "other_source_sha          = var.private_source_sha"))
 
 print(f"infra authority guard tests passed: {passed}")
 PY

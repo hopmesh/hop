@@ -4,30 +4,20 @@
 # which authenticates as hop-deploy over Workload Identity Federation (no key, no JSON) and applies the
 # runtime root. GCP is plumbing: it runs what GitHub blessed and verifies nothing about the change.
 #
-# The OIDC subject is exact: only a push-driven run on refs/heads/main can mint a token for hop-deploy.
-# A pull request ref, a tag, or any other branch mints no credentials at all. The WIF pool + provider
-# are the shared bootstrap-owned github-actions pool declared in billing.tf.
-# WHY NOT AN EXACT SUBJECT. This bound `principal://.../subject/${local.github_immutable_subject_main}`,
-# an exact immutable OIDC subject. That subject is NOT the one GitHub presents, so the binding never
-# matched and every token exchange died at impersonation with
-# "Permission 'iam.serviceAccounts.getAccessToken' denied". Runtime deploy was broken from 2026-08-07 to
-# 2026-08-16 for exactly this reason, and nothing surfaced it because the deploy is fire-and-forget.
-#
-# Proven by differential test, not inference: with the SAME pool, provider, repository and ref,
-# billing-catalog-apply authenticated successfully on a repository-attribute principalSet while
-# bootstrap-apply and hop-deploy were refused on their exact-subject principals. Federation works; only
-# the subject string was wrong.
-#
-# attribute.ref is scoped just as tightly and cannot rot the same way. The provider admits only
-# hopmesh/hop and maps attribute.ref = assertion.ref, so ref/refs/heads/main means canonical main of
-# that repository only.
-# A pull_request run carries refs/pull/N/merge and matches nothing, which is the property the exact
-# subject was chosen for. Unlike the subject claim, this does not depend on GitHub's sub-claim
-# customization, which is a repository setting that can be changed outside this codebase.
+# The provider admits only reviewed repository phases and maps GitHub's immutable workflow_ref claim.
+# The normal binding names this workflow file and main ref exactly. Explicit rollback temporarily
+# restores only platform's corresponding runtime workflow, never an arbitrary main-branch workflow.
 resource "google_service_account_iam_member" "deploy_runtime_wif" {
   service_account_id = google_service_account.deploy.name
   role               = "roles/iam.workloadIdentityUser"
-  member             = local.github_main_wif_member
+  member             = local.github_workflow_members.runtime
+}
+
+resource "google_service_account_iam_member" "deploy_runtime_wif_platform_rollback" {
+  count              = var.github_authority_phase == "handoff" ? 1 : 0
+  service_account_id = google_service_account.deploy.name
+  role               = "roles/iam.workloadIdentityUser"
+  member             = local.platform_rollback_workflow_members.runtime
 }
 
 output "runtime_wif_provider" {

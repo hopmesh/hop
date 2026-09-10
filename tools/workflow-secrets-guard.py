@@ -128,6 +128,20 @@ def check_static(root):
             scope in ("organization", "repository") or scope.startswith("environment:"),
             f"{name}: unknown scope {scope!r}",
         )
+        allowed_workflows = entry.get("workflows")
+        if allowed_workflows is not None:
+            require(
+                isinstance(allowed_workflows, list)
+                and allowed_workflows
+                and all(isinstance(item, str) and item.endswith(".yml") for item in allowed_workflows)
+                and len(allowed_workflows) == len(set(allowed_workflows)),
+                f"{name}: workflows must be a nonempty unique .yml list",
+            )
+            actual_workflows = {workflow for workflow, _, _ in used[name]}
+            require(
+                actual_workflows == set(allowed_workflows),
+                f"{name}: workflow consumers drifted; expected {sorted(allowed_workflows)}, got {sorted(actual_workflows)}",
+            )
         if entry.get("provisioned", True) is False:
             # A declared-but-unset name is allowed to exist (some paths are genuinely waiting on a
             # credential that only an owner can create), but it must say why, and every workflow that

@@ -11,8 +11,8 @@
 #   2. It used GITHUB_TOKEN. Auto-merge performs the merge AS the enabling actor, and pushes made
 #      by GITHUB_TOKEN do not trigger workflows, so the merge commit on main would skip ci.yml and
 #      pages.yml, and the Cloud Build deploy gate (which requires a green ci.yml run FOR the
-#      commit) would silently never deploy. HOP_SYNC_TOKEN (a real PAT) attributes the merge to a
-#      user, so push-triggered workflows and the deploy gate behave normally.
+#      commit) would silently never deploy. A short-lived GitHub App token attributes the merge to
+#      hop-component-sync[bot], so push-triggered workflows and the deploy gate behave normally.
 # Nothing here runs untrusted PR code (API call only), so pull_request_target is safe.
 name: PR auto-merge
 
@@ -30,14 +30,11 @@ jobs:
     # went green, with no human in the loop. GitHub's fork-PR approval covers RUNNING a workflow, not
     # merging, so approving someone's CI run would be the same click that arms their merge. Branch
     # protection cannot express "only maintainer PRs auto-merge", so the gate lives here.
-    # IMPORT PRs MUST NEVER AUTO-MERGE. Copybara's import path takes a PR opened on a public mirror
-    # by an OUTSIDE contributor, re-adds the path prefix, and opens it here, authored by
-    # github-actions[bot] (the import job uses the workflow token). An import PR is third-party code
-    # wearing the workflow's identity, so do NOT add github-actions[bot] (or the sync App's login) to
-    # the allowlist below: allowlisting the identity that opens an import PR would let a stranger's
-    # mirror PR automerge to main, which is the exact hole this gate exists to close, made less
-    # visible. Import PRs merge by hand after review. Changelog PRs arrive under the PAT user's
-    # login (jwaldrip), so they are already covered below.
+    # IMPORT PRs MUST NEVER AUTO-MERGE. Copybara takes a PR from a public mirror, re-adds the path
+    # prefix, and opens it here under automation identity. That PR is still third-party code. The
+    # exact login alone is therefore never enough: the sync App is admitted only with the changelog
+    # workflow's exact title and run-scoped branch prefix. Imported and every other App-authored PR
+    # remain excluded and merge by hand after review.
     #
     # Keep this condition on ONE line. The first version of this gate wrapped it across three lines
     # with `>-` and each continuation indented further than the first. In a YAML folded scalar,
@@ -49,19 +46,32 @@ jobs:
     # is the more elegant check but it is computed from a relationship that can change (org
     # membership visibility, a role edit) and when it returns something unexpected this job skips
     # SILENTLY, which is the worst failure shape for a merge gate. An exact login cannot drift.
-    if: ${{ !github.event.pull_request.draft && (contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association) || contains(fromJSON('["jwaldrip","dependabot[bot]"]'), github.event.pull_request.user.login)) }}
+    if: >-
+      ${{ !github.event.pull_request.draft && (contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association) || contains(fromJSON('["jwaldrip","dependabot[bot]"]'), github.event.pull_request.user.login) || (github.event.pull_request.user.login == 'hop-component-sync[bot]' && startsWith(github.event.pull_request.head.ref, 'chore/changelog-') && github.event.pull_request.title == 'docs(changelog): regenerate from conventional commits')) }}
     runs-on: ubuntu-latest
+    environment: component-sync
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - id: app-token
+        name: Create repository-scoped automerge token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.HOP_SYNC_APP_ID }}
+          private-key: ${{ secrets.HOP_SYNC_APP_PRIVATE_KEY }}
+          owner: hopmesh
+          repositories: hop
+          permission-contents: write
+          permission-pull-requests: write
       - name: Inspect PR title, body, commits, and changed files for auto-merge safety (PROC-002, INFRA-018, PROC-012)
         id: review-intent
         env:
           TITLE: ${{ github.event.pull_request.title }}
           BODY: ${{ github.event.pull_request.body }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          GH_TOKEN: ${{ secrets.HOP_SYNC_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: python3 .github/scripts/check-pr-automerge-safety.py
 
       - name: Disable auto-merge on hold, review intent, or failed safety check (INFRA-018)
@@ -69,11 +79,11 @@ jobs:
         run: gh pr merge --disable-auto "$PR_URL" || true
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
-          GH_TOKEN: ${{ secrets.HOP_SYNC_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
 
       - name: Enable merge-commit auto-merge
         if: steps.review-intent.outputs.arm_automerge == 'true'
         run: gh pr merge --auto --merge "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
-          GH_TOKEN: ${{ secrets.HOP_SYNC_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}

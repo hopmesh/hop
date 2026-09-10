@@ -262,6 +262,57 @@ for job in full:
         problems.append("local-ci-mirror.sh missing gating step: bash tools/archive-readiness-guard.test.sh")
     if not has_mirror_invocation("python3", "tools/archive-readiness-guard.py"):
         problems.append("local-ci-mirror.sh missing gating step: python3 tools/archive-readiness-guard.py")
+
+ci_doc = yaml.safe_load(ci_text) or {}
+infra_steps = ci_doc.get("jobs", {}).get("infrastructure", {}).get("steps", [])
+ci_infra_commands = []
+for step in infra_steps:
+    run_block = step.get("run") if isinstance(step, dict) else None
+    if not isinstance(run_block, str):
+        continue
+    for line in run_block.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            tokens = tuple(shlex.split(line, comments=True))
+        except ValueError:
+            continue
+        if tokens:
+            ci_infra_commands.append(tokens)
+mirror_commands = []
+for line in mirror_text.splitlines():
+    line = line.strip()
+    if not line.startswith("step "):
+        continue
+    try:
+        tokens = shlex.split(line, comments=True)
+    except ValueError:
+        continue
+    if len(tokens) >= 3:
+        mirror_commands.append(tuple(tokens[2:]))
+infra_required = (
+    ("tofu", "-chdir=infra", "fmt", "-check", "-recursive"),
+    ("tofu", "-chdir=infra", "init", "-backend=false", "-input=false"),
+    ("tofu", "-chdir=infra", "validate"),
+    ("tofu", "-chdir=infra/bootstrap", "init", "-backend=false", "-input=false"),
+    ("tofu", "-chdir=infra/bootstrap", "validate"),
+    ("bash", "tools/infra-authority-guard.test.sh"),
+    ("python3", "tools/infra-authority-guard.py"),
+    ("bash", "tools/private-source-pin.test.sh"),
+    ("python3", "tools/private-source-pin.py", "verify-lock", "--lock", "infra/private-source.lock"),
+    ("bash", "tools/runtime-deploy-guard.test.sh"),
+    ("python3", "tools/runtime-deploy-guard.py"),
+    ("bash", "tools/secondary-deploy-authority-guard.test.sh"),
+    ("python3", "tools/secondary-deploy-authority-guard.py"),
+)
+if "infrastructure" in full:
+    for command in infra_required:
+        rendered = " ".join(command)
+        if command not in ci_infra_commands:
+            problems.append(f"infrastructure is declared full but CI no longer runs {rendered}")
+        if command not in mirror_commands:
+            problems.append(f"infrastructure is declared full but the mirror never runs {rendered}")
 if problems:
     print("::error::local-ci-mirror coverage: a `full` claim is not backed by what the mirror runs:")
     for problem in problems:

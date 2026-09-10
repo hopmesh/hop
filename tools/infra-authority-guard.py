@@ -441,14 +441,15 @@ def check(root):
             if permission in legacy_role:
                 errors.append(f"legacy secret role has forbidden permission: {permission}")
 
-    relay_access = resource_block(iam, "google_secret_manager_secret_iam_member", "relay_identity")
-    example_access = resource_block(iam, "google_secret_manager_secret_iam_member", "example_identity")
-    if not relay_access or "google_service_account.relay.email" not in relay_access:
-        errors.append("relay seed accessor is not the relay runtime identity")
-    if relay_access and "google_service_account.deploy.email" in relay_access:
-        errors.append("deploy identity can read the relay seed")
-    if not example_access or "google_service_account.example.email" not in example_access:
-        errors.append("example secret accessor is not the dedicated example identity")
+    relay_access = resource_block(iam, "google_secret_manager_secret_iam_member", "relay_identity") or ""
+    example_access = resource_block(iam, "google_secret_manager_secret_iam_member", "example_identity") or ""
+    seed_grants = (
+        ("relay", relay_access, "google_secret_manager_secret.relay_identity.secret_id", '"serviceAccount:${google_service_account.relay.email}"'),
+        ("example", example_access, "google_secret_manager_secret.example_identity.secret_id", '"serviceAccount:${google_service_account.example.email}"'),
+    )
+    for name, block, secret_id, member in seed_grants:
+        if not has_exact_top_level_assignment(block, "secret_id", secret_id) or not has_exact_top_level_assignment(block, "role", '"roles/secretmanager.secretAccessor"') or not has_exact_top_level_assignment(block, "member", member):
+            errors.append(f"{name} seed accessor grant drifted")
     # The relay seed's hard-deny policy was removed: GCP rejects roles/iam.denyAdmin at the
     # project level and forbids iam.denypolicies.* in custom roles, so the project-scoped
     # applier cannot manage a deny policy without an ORG-level grant. Protection now rests
@@ -525,7 +526,39 @@ def check(root):
         'can(regex("^[1-9][0-9]*$", var.billing_price_ids_version))',
     ):
         errors.append("billing_price_ids_version does not require a positive numeric version")
+    accountd_runtime = resource_block(runtime, "google_cloud_run_v2_service", "accountd") or ""
+    accountd_lifecycle = top_level_block(accountd_runtime, "lifecycle") or ""
+    price_preconditions = repeated_blocks(accountd_lifecycle, "precondition")
+    if len(price_preconditions) != 1:
+        errors.append("accountd must have exactly one billing price provenance precondition")
+    else:
+        price_precondition = "\n".join(strip_hcl_comment(line) for line in price_preconditions[0].splitlines())
+        for required in (
+            'toset(keys(local.billing_prices)) == toset(["base", "reach", "observability", "private_source_sha"])',
+            'alltrue([for key in ["base", "reach", "observability"] : can(regex("^price_[A-Za-z0-9]+$", local.billing_prices[key]))])',
+            "local.billing_prices.private_source_sha == var.private_source_sha",
+        ):
+            if price_precondition.count(required) != 1:
+                errors.append(f"billing price provenance precondition missing: {required}")
+        if not has_exact_top_level_assignment(price_preconditions[0], "error_message", '"hop-billing-price-ids must contain the three Stripe price ids produced from the pinned private source commit."'):
+            errors.append("billing price provenance failure is not explicit")
 
+    drift_output = balanced_block(runtime, 'output "drift_inputs"') or ""
+    drift_values = top_level_block(drift_output, "value =") or ""
+    expected_drift_values = [
+        ("relay_image", "var.relay_image"),
+        ("example_image", "var.example_image"),
+        ("accountd_image", "var.accountd_image"),
+        ("console_image", "var.console_image"),
+        ("deployment_source_sha", "var.deployment_source_sha"),
+        ("private_source_sha", "var.private_source_sha"),
+        ("billing_price_ids_version", "var.billing_price_ids_version"),
+        ("deployment_environment", "var.deployment_environment"),
+        ("relay_identity_version", "var.relay_identity_version"),
+        ("example_identity_version", "var.example_identity_version"),
+    ]
+    if top_level_assignment_pairs(drift_values) != expected_drift_values or top_level_assignment_values(drift_output, "sensitive"):
+        errors.append("runtime drift input output is incomplete or sensitive")
     service_contract = {
         "relay": ('"hop-relay-${each.value}"', "local.regions"),
         "example": ('"hop-example"', None),
@@ -660,6 +693,7 @@ def check(root):
         ('"google.subject"', '"assertion.sub"'),
         ('"attribute.repository"', '"assertion.repository"'),
         ('"attribute.ref"', '"assertion.ref"'),
+        ('"attribute.workflow"', '"assertion.workflow_ref"'),
     ]:
         errors.append("bootstrap WIF attribute mapping drifted")
     oidc = top_level_block(provider, "oidc") or ""
@@ -674,6 +708,13 @@ def check(root):
         'github_hop_repository      = "hopmesh/hop"',
         'handoff = "assertion.repository == \\\"${local.github_platform_repository}\\\" || assertion.repository == \\\"${local.github_hop_repository}\\\""',
         'hop     = "assertion.repository == \\\"${local.github_hop_repository}\\\""',
+        'runtime   = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.workflow/${local.github_hop_repository}/.github/workflows/runtime-deploy.yml@refs/heads/main"',
+        'bootstrap = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.workflow/${local.github_hop_repository}/.github/workflows/bootstrap-apply.yml@refs/heads/main"',
+        'billing   = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.workflow/${local.github_hop_repository}/.github/workflows/billing-catalog.yml@refs/heads/main"',
+        'drift     = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.workflow/${local.github_hop_repository}/.github/workflows/infra-drift.yml@refs/heads/main"',
+        'runtime   = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.workflow/${local.github_platform_repository}/.github/workflows/runtime-deploy.yml@refs/heads/main"',
+        'bootstrap = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.workflow/${local.github_platform_repository}/.github/workflows/handoff-deploy-authority.yml@refs/heads/main"',
+        'billing   = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.workflow/${local.github_platform_repository}/.github/workflows/billing-catalog.yml@refs/heads/main"',
     ):
         if len(re.findall(rf'^\s*{re.escape(expected_line)}\s*$', bootstrap, re.MULTILINE)) != 1:
             errors.append(f"bootstrap authority state machine drifted: {expected_line}")
@@ -686,14 +727,25 @@ def check(root):
         validation = top_level_block(block, "validation") or ""
         if not has_exact_top_level_assignment(block, "default", expected) or not has_exact_top_level_assignment(validation, "condition", f"var.{var_name} == {expected}"):
             errors.append(f"bootstrap {var_name} is not fixed")
-    main_members = re.findall(r'^\s*github_main_wif_member\s*=\s*(.*?)\s*$', bootstrap, re.MULTILINE)
-    expected_main_member = '"principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.ref/refs/heads/main"'
-    if main_members != [expected_main_member] or "attribute.repository/" in " ".join(main_members):
-        errors.append("bootstrap shared WIF principal is not the exact main ref")
-    for name in ("deploy_runtime_wif", "bootstrap_apply_wif", "billing_catalog_wif_main"):
+    hop_bindings = {
+        "deploy_runtime_wif": ("google_service_account.deploy.name", "local.github_workflow_members.runtime"),
+        "bootstrap_apply_wif": ("google_service_account.bootstrap_apply.name", "local.github_workflow_members.bootstrap"),
+        "billing_catalog_wif_main": ("google_service_account.billing_catalog_apply.name", "local.github_workflow_members.billing"),
+        "infra_drift_wif": ("google_service_account.infra_drift.name", "local.github_workflow_members.drift"),
+    }
+    rollback_bindings = {
+        "deploy_runtime_wif_platform_rollback": ("google_service_account.deploy.name", "local.platform_rollback_workflow_members.runtime"),
+        "bootstrap_apply_wif_platform_rollback": ("google_service_account.bootstrap_apply.name", "local.platform_rollback_workflow_members.bootstrap"),
+        "billing_catalog_wif_platform_rollback": ("google_service_account.billing_catalog_apply.name", "local.platform_rollback_workflow_members.billing"),
+    }
+    for name, (service_account, member) in hop_bindings.items():
         block = resource_block(bootstrap, "google_service_account_iam_member", name) or ""
-        if not has_exact_top_level_assignment(block, "member", "local.github_main_wif_member"):
-            errors.append(f"bootstrap WIF binding {name} is not main-ref scoped")
+        if not has_exact_top_level_assignment(block, "service_account_id", service_account) or not has_exact_top_level_assignment(block, "role", '"roles/iam.workloadIdentityUser"') or not has_exact_top_level_assignment(block, "member", member) or top_level_block(block, "condition"):
+            errors.append(f"bootstrap workflow-scoped WIF binding drifted: {name}")
+    for name, (service_account, member) in rollback_bindings.items():
+        block = resource_block(bootstrap, "google_service_account_iam_member", name) or ""
+        if not has_exact_top_level_assignment(block, "count", 'var.github_authority_phase == "handoff" ? 1 : 0') or not has_exact_top_level_assignment(block, "service_account_id", service_account) or not has_exact_top_level_assignment(block, "role", '"roles/iam.workloadIdentityUser"') or not has_exact_top_level_assignment(block, "member", member) or top_level_block(block, "condition"):
+            errors.append(f"bootstrap rollback WIF binding drifted: {name}")
     bootstrap_resources = re.findall(r'^\s*resource\s+"([^"]+)"\s+"([^"]+)"\s*\{', bootstrap, re.MULTILINE)
     wif_grants = []
     for kind, name in bootstrap_resources:
@@ -702,7 +754,8 @@ def check(root):
         block = resource_block(bootstrap, kind, name) or ""
         if top_level_assignment_values(block, "role") == ['"roles/iam.workloadIdentityUser"']:
             wif_grants.append(name)
-    if sorted(wif_grants) != ["billing_catalog_wif_main", "bootstrap_apply_wif", "deploy_runtime_wif"]:
+    expected_wif_grants = sorted(set(hop_bindings) | set(rollback_bindings))
+    if sorted(wif_grants) != expected_wif_grants:
         errors.append(f"bootstrap WIF grant set drifted: {sorted(wif_grants)}")
 
     price_secret = resource_block(bootstrap, "google_secret_manager_secret", "billing_price_ids") or ""
@@ -714,38 +767,77 @@ def check(root):
         "billing_catalog_price_ids_writer": ("google_service_account.billing_catalog_apply.email", '"roles/secretmanager.secretVersionAdder"'),
         "deploy_billing_price_ids_accessor": ("google_service_account.deploy.email", '"roles/secretmanager.secretAccessor"'),
         "deploy_billing_price_ids_viewer": ("google_service_account.deploy.email", '"roles/secretmanager.viewer"'),
+        "infra_drift_price_ids_accessor": ("google_service_account.infra_drift.email", '"roles/secretmanager.secretAccessor"'),
+        "infra_drift_price_ids_viewer": ("google_service_account.infra_drift.email", '"roles/secretmanager.viewer"'),
     }
     for name, (member_name, role) in expected_price_grants.items():
         block = resource_block(bootstrap, "google_secret_manager_secret_iam_member", name) or ""
         if not has_exact_top_level_assignment(block, "secret_id", "google_secret_manager_secret.billing_price_ids.secret_id") or not has_exact_top_level_assignment(block, "role", role) or not has_exact_top_level_assignment(block, "member", f'"serviceAccount:${{{member_name}}}"'):
             errors.append(f"billing price id secret grant drifted: {name}")
+    vendor_readers = {
+        "billing_catalog_stripe_api_key_reader": "google_secret_manager_secret.stripe_api_key.secret_id",
+        "billing_catalog_resend_api_key_reader": '"hop-resend-apikey"',
+    }
+    for name, secret_id in vendor_readers.items():
+        block = resource_block(bootstrap, "google_secret_manager_secret_iam_member", name) or ""
+        if not has_exact_top_level_assignment(block, "secret_id", secret_id) or not has_exact_top_level_assignment(block, "role", '"roles/secretmanager.secretAccessor"') or not has_exact_top_level_assignment(block, "member", '"serviceAccount:${google_service_account.billing_catalog_apply.email}"'):
+            errors.append(f"billing catalog vendor credential reader drifted: {name}")
     secret_iam_names = [name for kind, name in re.findall(r'^\s*resource\s+"([^"]+)"\s+"([^"]+)"\s*\{', bootstrap, re.MULTILINE) if kind == "google_secret_manager_secret_iam_member"]
     deploy_secret_grants = []
+    drift_secret_grants = []
     catalog_price_writers = []
+    catalog_direct_readers = []
     for name in secret_iam_names:
         block = resource_block(bootstrap, "google_secret_manager_secret_iam_member", name) or ""
         member = top_level_assignment_values(block, "member")
         role = top_level_assignment_values(block, "role")
         if any("google_service_account.deploy.email" in value for value in member):
             deploy_secret_grants.append(name)
+        if any("google_service_account.infra_drift.email" in value for value in member):
+            drift_secret_grants.append(name)
         if role == ['"roles/secretmanager.secretVersionAdder"']:
             catalog_price_writers.append(name)
+        if role == ['"roles/secretmanager.secretAccessor"'] and any("google_service_account.billing_catalog_apply.email" in value for value in member):
+            catalog_direct_readers.append(name)
     if sorted(deploy_secret_grants) != ["deploy_billing_price_ids_accessor", "deploy_billing_price_ids_viewer"]:
         errors.append(f"hop-deploy secret grants are not exclusive to billing price ids: {sorted(deploy_secret_grants)}")
+    if sorted(drift_secret_grants) != ["infra_drift_price_ids_accessor", "infra_drift_price_ids_viewer"]:
+        errors.append(f"infra drift secret grants drifted: {sorted(drift_secret_grants)}")
     if catalog_price_writers != ["billing_catalog_price_ids_writer"]:
         errors.append(f"SecretVersionAdder grants drifted: {sorted(catalog_price_writers)}")
+    if sorted(catalog_direct_readers) != sorted(vendor_readers):
+        errors.append(f"billing catalog vendor credential reader set drifted: {sorted(catalog_direct_readers)}")
     forbidden_secret_iam = [
         f"{kind}.{name}" for kind, name in bootstrap_resources
         if kind in {"google_secret_manager_secret_iam_binding", "google_secret_manager_secret_iam_policy"}
     ]
     if forbidden_secret_iam:
         errors.append(f"bootstrap uses authoritative secret IAM resources: {sorted(forbidden_secret_iam)}")
-    if resource_block(bootstrap, "google_storage_bucket_iam_member", "deploy_billing_state_reader"):
-        errors.append("hop-deploy retains forbidden read access to private billing state")
+    rollback_reader = resource_block(bootstrap, "google_storage_bucket_iam_member", "deploy_billing_state_reader") or ""
+    rollback_condition = top_level_block(rollback_reader, "condition") or ""
+    if not has_exact_top_level_assignment(rollback_reader, "count", 'var.github_authority_phase == "handoff" ? 1 : 0') or not has_exact_top_level_assignment(rollback_reader, "bucket", "var.runtime_state_bucket") or not has_exact_top_level_assignment(rollback_reader, "role", '"roles/storage.objectViewer"') or not has_exact_top_level_assignment(rollback_reader, "member", '"serviceAccount:${google_service_account.deploy.email}"') or not has_exact_top_level_assignment(rollback_condition, "title", '"billing-state-read-only"') or not has_exact_top_level_assignment(rollback_condition, "expression", '"resource.name.startsWith(\\"projects/_/buckets/${var.runtime_state_bucket}/objects/billing/\\")"'):
+        errors.append("rollback billing state reader is not exact and phase-bound")
     billing_state = resource_block(bootstrap, "google_storage_bucket_iam_member", "billing_catalog_state") or ""
     billing_condition = top_level_block(billing_state, "condition") or ""
     if not has_exact_top_level_assignment(billing_state, "bucket", "var.runtime_state_bucket") or not has_exact_top_level_assignment(billing_state, "role", '"roles/storage.objectAdmin"') or not has_exact_top_level_assignment(billing_state, "member", '"serviceAccount:${google_service_account.billing_catalog_apply.email}"') or not has_exact_top_level_assignment(billing_condition, "expression", '"resource.name == \\\"projects/_/buckets/${var.runtime_state_bucket}\\\" || resource.name.startsWith(\\\"projects/_/buckets/${var.runtime_state_bucket}/objects/billing/\\\")"'):
         errors.append("billing catalog state access drifted")
+    drift_sa = resource_block(bootstrap, "google_service_account", "infra_drift") or ""
+    drift_project = resource_block(bootstrap, "google_project_iam_member", "infra_drift_viewer") or ""
+    drift_state = resource_block(bootstrap, "google_storage_bucket_iam_member", "infra_drift_state_reader") or ""
+    drift_condition = top_level_block(drift_state, "condition") or ""
+    if not has_exact_top_level_assignment(drift_sa, "account_id", '"hop-infra-drift"') or not has_exact_top_level_assignment(drift_project, "role", '"roles/viewer"') or not has_exact_top_level_assignment(drift_project, "member", '"serviceAccount:${google_service_account.infra_drift.email}"'):
+        errors.append("read-only drift service account or project role drifted")
+    if not has_exact_top_level_assignment(drift_state, "bucket", "var.runtime_state_bucket") or not has_exact_top_level_assignment(drift_state, "role", '"roles/storage.objectViewer"') or not has_exact_top_level_assignment(drift_state, "member", '"serviceAccount:${google_service_account.infra_drift.email}"') or not has_exact_top_level_assignment(drift_condition, "title", '"runtime-drift-state-read-only"') or not has_exact_top_level_assignment(drift_condition, "expression", '"resource.name == \\\"projects/_/buckets/${var.runtime_state_bucket}\\\" || resource.name.startsWith(\\\"projects/_/buckets/${var.runtime_state_bucket}/objects/${var.runtime_state_prefix}/\\\")"'):
+        errors.append("read-only drift state access drifted")
+    drift_project_grants = []
+    for kind, name in bootstrap_resources:
+        if kind != "google_project_iam_member":
+            continue
+        block = resource_block(bootstrap, kind, name) or ""
+        if any("google_service_account.infra_drift.email" in value for value in top_level_assignment_values(block, "member")):
+            drift_project_grants.append(name)
+    if drift_project_grants != ["infra_drift_viewer"]:
+        errors.append(f"infra drift project grant set drifted: {sorted(drift_project_grants)}")
     deploy_bucket_grants = []
     for kind, name in bootstrap_resources:
         if kind != "google_storage_bucket_iam_member":
@@ -753,7 +845,7 @@ def check(root):
         block = resource_block(bootstrap, kind, name) or ""
         if any("google_service_account.deploy.email" in value for value in top_level_assignment_values(block, "member")):
             deploy_bucket_grants.append(name)
-    if deploy_bucket_grants != ["deploy_state"]:
+    if sorted(deploy_bucket_grants) != ["deploy_billing_state_reader", "deploy_state"]:
         errors.append(f"hop-deploy storage grant set drifted: {sorted(deploy_bucket_grants)}")
 
     bootstrap_removed_blocks = repeated_blocks(bootstrap, "removed")

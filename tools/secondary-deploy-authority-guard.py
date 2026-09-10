@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 from pathlib import Path
 
 import yaml
@@ -75,8 +76,8 @@ def check_billing(root: Path) -> list[str]:
     if "secrets." in validate_text:
         errors.append("billing PR validation references a secret")
     catalog = jobs["catalog"]
-    if catalog.get("environment") != "release":
-        errors.append("billing deploy must use the protected release environment")
+    if catalog.get("environment") != "component-sync":
+        errors.append("billing deploy must use the protected component-sync environment")
     condition = catalog.get("if", "")
     for required in (
         "github.event_name == 'workflow_dispatch'",
@@ -88,38 +89,61 @@ def check_billing(root: Path) -> list[str]:
             errors.append(f"billing eligibility missing: {required}")
     if "vars." in condition or "secrets." in condition:
         errors.append("missing billing configuration must fail inside the job")
+    workflow_text = path.read_text(encoding="utf-8")
+    if "HOP_SYNC_TOKEN" in workflow_text:
+        errors.append("billing workflow retains the broad organization PAT")
+    if "secretmanager.googleapis.com" in workflow_text or "curl " in workflow_text:
+        errors.append("billing workflow downloads or writes API JSON through curl")
     try:
-        token_index, token = step_by_name(catalog, "Require the private checkout token")
+        public_index, public = step_by_name(catalog, "Check out canonical hop main")
+        pin_index, pin = step_by_name(catalog, "Validate and read private source pin")
+        token_index, token = step_by_name(catalog, "Create read-only private source token")
         checkout_index, checkout = step_by_name(catalog, "Check out exact private billing source")
         verify_index, _ = step_by_name(catalog, "Verify exact private checkout")
+        credentials_index, credentials = step_by_name(catalog, "Load vendor credentials from Secret Manager without logging")
         plan_index, plan = step_by_name(catalog, "Create saved private billing plan")
+        policy_index, _ = step_by_name(catalog, "Refuse billing deletion or replacement")
+        stale_index, stale = step_by_name(catalog, "Refuse a superseded billing apply")
         apply_index, apply = step_by_name(catalog, "Apply the saved private billing plan")
         publish_index, publish = step_by_name(catalog, "Publish one validated billing price id version")
-        if [token_index, checkout_index, verify_index, plan_index, apply_index, publish_index] != sorted(
-            [token_index, checkout_index, verify_index, plan_index, apply_index, publish_index]
-        ):
+        order = [public_index, pin_index, token_index, checkout_index, verify_index, credentials_index, plan_index, policy_index, stale_index, apply_index, publish_index]
+        if order != sorted(order):
             errors.append("billing workflow order drifted")
-        if token.get("env") != {"PRIVATE_SOURCE_TOKEN": "${{ secrets.HOP_SYNC_TOKEN }}"}:
-            errors.append("billing token scope drifted")
+        if public.get("with", {}).get("ref") != "${{ github.sha }}" or catalog.get("env", {}).get("EXPECTED_SHA") != "${{ github.sha }}":
+            errors.append("billing workflow does not pin the reviewed dispatch SHA")
+        pin_text = pin.get("run", "")
+        for required in ('git rev-parse HEAD)" = "$EXPECTED_SHA', '"$EXPECTED_SHA" = "$(git ls-remote origin refs/heads/main'):
+            if required not in pin_text:
+                errors.append(f"billing initial main check missing: {required}")
+        if token.get("uses") != "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1" or token.get("with") != {
+            "app-id": "${{ secrets.HOP_SYNC_APP_ID }}", "private-key": "${{ secrets.HOP_SYNC_APP_PRIVATE_KEY }}",
+            "owner": "hopmesh", "repositories": "platform", "permission-contents": "read",
+        }:
+            errors.append("billing private source token is not immutable repository-scoped read-only")
         expected_checkout = {
-            "repository": "${{ steps.pin.outputs.repository }}",
-            "ref": "${{ steps.pin.outputs.commit }}",
-            "token": "${{ secrets.HOP_SYNC_TOKEN }}",
-            "path": "private",
-            "fetch-depth": "1",
-            "persist-credentials": "false",
+            "repository": "${{ steps.pin.outputs.repository }}", "ref": "${{ steps.pin.outputs.commit }}",
+            "token": "${{ steps.private-source-token.outputs.token }}", "path": "private",
+            "fetch-depth": "1", "persist-credentials": "false",
         }
         if checkout.get("with") != expected_checkout:
             errors.append("billing private checkout is not exact and credential-minimal")
-        if "-out=tfplan" not in plan.get("run", "") or "tofu show -json tfplan" not in plan.get("run", ""):
-            errors.append("billing workflow does not inspect one saved plan")
-        if "tofu apply" not in apply.get("run", "") or "tfplan" not in apply.get("run", ""):
-            errors.append("billing apply does not use the saved plan")
+        credentials_text = credentials.get("run", "")
+        if credentials_text.count("gcloud secrets versions access latest") != 1 or "detailed" in credentials_text or "curl " in credentials_text:
+            errors.append("billing vendor credential loader drifted")
+        plan_text = plan.get("run", "")
+        if "-out=tfplan" not in plan_text or "tofu show -json tfplan" not in plan_text or 'billing-plan.log" 2>&1' not in plan_text or "detailed output withheld" not in plan_text:
+            errors.append("billing workflow does not privately inspect one saved plan")
+        stale_text = stale.get("run", "")
+        if stale.get("if") != "env.OPERATION == 'apply'" or 'git rev-parse HEAD)" = "$EXPECTED_SHA' not in stale_text or '"$tip" = "$EXPECTED_SHA"' not in stale_text:
+            errors.append("billing apply is not rejected when hop main is superseded")
+        apply_text = apply.get("run", "")
+        if "tofu apply" not in apply_text or "tfplan" not in apply_text or "billing-apply.log" not in apply_text or "detailed output withheld" not in apply_text:
+            errors.append("billing apply does not privately consume the saved plan")
         if apply.get("if") != "env.OPERATION == 'apply'":
             errors.append("billing apply condition drifted")
         publish_text = publish.get("run", "")
-        if publish.get("if") != "steps.apply.outputs.applied == 'true'" or "hop-billing-price-ids:addVersion" not in publish_text:
-            errors.append("billing price id version is not coupled to a successful apply")
+        if publish.get("if") != "steps.apply.outputs.applied == 'true'" or "gcloud secrets versions add hop-billing-price-ids" not in publish_text or 'payload["private_source_sha"]' not in publish_text:
+            errors.append("billing price id version is not coupled to successful apply and private source")
     except ValueError as error:
         errors.append(str(error))
     return errors
@@ -138,11 +162,16 @@ def check_drift(root: Path) -> list[str]:
     if doc.get("permissions") != {"contents": "read", "id-token": "write"}:
         errors.append("drift workflow permissions drifted")
     jobs = doc.get("jobs", {})
-    if set(jobs) != {"validate", "bootstrap"}:
+    if set(jobs) != {"validate", "runtime"}:
         errors.append(f"drift jobs drifted: {sorted(jobs)}")
         return errors
-    bootstrap = jobs["bootstrap"]
-    condition = bootstrap.get("if", "")
+    runtime = jobs["runtime"]
+    if runtime.get("environment") != "release":
+        errors.append("drift must use the protected release environment")
+    drift_env = runtime.get("env", {})
+    if drift_env.get("DRIFT_WIF_PROVIDER") != "${{ vars.GCP_DRIFT_WIF_PROVIDER }}" or drift_env.get("DRIFT_SERVICE_ACCOUNT") != "${{ vars.GCP_DRIFT_SERVICE_ACCOUNT }}":
+        errors.append("drift job does not use the dedicated repository variables")
+    condition = runtime.get("if", "")
     for required in (
         "github.event_name != 'pull_request'",
         "github.repository == 'hopmesh/hop'",
@@ -151,12 +180,34 @@ def check_drift(root: Path) -> list[str]:
         if required not in condition:
             errors.append(f"drift eligibility missing: {required}")
     text = path.read_text(encoding="utf-8")
-    if "tofu apply" in text:
-        errors.append("drift workflow may not apply")
-    if "-detailed-exitcode -lock=false" not in text:
-        errors.append("drift workflow does not distinguish drift without locking state")
-    if "bootstrap drift detected" not in text or "bootstrap drift check failed" not in text:
-        errors.append("drift workflow does not distinguish drift from execution failure")
+    for forbidden in (
+        "tofu apply", "terraform apply", "BOOTSTRAP_WIF_PROVIDER", "BOOTSTRAP_SERVICE_ACCOUNT",
+        "infra/bootstrap", "gcloud ", "curl ", "kubectl ", "gh api", "gh workflow",
+    ):
+        if forbidden in text:
+            errors.append(f"drift workflow contains forbidden mutation or admin surface: {forbidden}")
+    runtime_text = yaml.safe_dump(runtime, sort_keys=False)
+    if "secrets." in runtime_text:
+        errors.append("drift runtime job may not read GitHub secrets")
+    try:
+        auth_index, auth = step_by_name(runtime, "Authenticate read-only drift identity")
+        restore_index, restore = step_by_name(runtime, "Restore non-secret applied runtime inputs")
+        plan_index, plan = step_by_name(runtime, "Fail on runtime drift without disclosing private build detail")
+        if [auth_index, restore_index, plan_index] != sorted([auth_index, restore_index, plan_index]):
+            errors.append("drift auth, state input, and plan order drifted")
+        auth_with = auth.get("with", {})
+        if auth_with.get("workload_identity_provider") != "${{ env.DRIFT_WIF_PROVIDER }}" or auth_with.get("service_account") != "${{ env.DRIFT_SERVICE_ACCOUNT }}":
+            errors.append("drift does not authenticate the dedicated read-only identity")
+        restore_text = restore.get("run", "")
+        if "tofu output -json drift_inputs" not in restore_text or "TF_VAR_" not in restore_text:
+            errors.append("drift does not restore the applied non-secret runtime inputs")
+        plan_text = plan.get("run", "")
+        normalized = plan_text.replace('>"', '>').replace('"', '')
+        for required in ("-detailed-exitcode -lock=false -out=drift.tfplan", ">$RUNNER_TEMP/runtime-drift.log", "tofu show -json drift.tfplan", "runtime infrastructure drift detected", "detailed output withheld"):
+            if required not in normalized:
+                errors.append(f"drift plan proof missing: {required}")
+    except ValueError as error:
+        errors.append(str(error))
     return errors
 
 
@@ -199,14 +250,23 @@ def check_bootstrap(root: Path) -> list[str]:
     for forbidden in ("BOOTSTRAP_TFVARS", "secrets.HOP_SYNC_TOKEN"):
         if forbidden in text:
             errors.append(f"bootstrap workflow contains forbidden authority input: {forbidden}")
+    checkout_steps = [step for step in job_steps(job) if step.get("uses", "").startswith("actions/checkout@")]
+    if len(checkout_steps) != 1 or checkout_steps[0].get("with", {}).get("ref") != "${{ github.sha }}" or job.get("env", {}).get("EXPECTED_SHA") != "${{ github.sha }}":
+        errors.append("bootstrap workflow does not pin the reviewed dispatch SHA")
     try:
+        initial_index, initial = step_by_name(job, "Require canonical main and every non-secret input")
         _, materialize = step_by_name(job, "Materialize reviewed non-secret bootstrap inputs")
         plan_index, plan = step_by_name(job, "Create and inspect one saved bootstrap plan")
         policy_index, policy = step_by_name(job, "Refuse unrelated bootstrap actions")
+        stale_index, stale = step_by_name(job, "Refuse a superseded bootstrap apply")
         apply_index, apply = step_by_name(job, "Apply the saved bootstrap plan")
         proof_index, proof = step_by_name(job, "Prove final or rollback authority state")
-        if [plan_index, policy_index, apply_index, proof_index] != sorted([plan_index, policy_index, apply_index, proof_index]):
-            errors.append("bootstrap plan, policy, apply, and proof order drifted")
+        if [initial_index, plan_index, policy_index, stale_index, apply_index, proof_index] != sorted([initial_index, plan_index, policy_index, stale_index, apply_index, proof_index]):
+            errors.append("bootstrap source, plan, policy, supersession, apply, and proof order drifted")
+        initial_text = initial.get("run", "")
+        for required in ('git rev-parse HEAD)" = "$EXPECTED_SHA', '"$EXPECTED_SHA" = "$(git ls-remote origin refs/heads/main'):
+            if required not in initial_text:
+                errors.append(f"bootstrap initial main check missing: {required}")
         materialize_text = materialize.get("run", "")
         if 'phase=hop' not in materialize_text or 'if [ "$OPERATION" = rollback ]; then phase=handoff; fi' not in materialize_text:
             errors.append("bootstrap workflow does not map operations to the closed authority phases")
@@ -217,19 +277,77 @@ def check_bootstrap(root: Path) -> list[str]:
         policy_text = policy.get("run", "")
         for required in (
             'previous = item.get("previous_address")',
-            'actions == ("delete",) and address == "google_storage_bucket_iam_member.deploy_billing_state_reader" and operation != "rollback"',
+            'normal_mutable = {',
+            'normal_replacements = {',
+            'rollback_creates = {',
+            'if operation == "rollback":',
+            'address in rollback_creates and actions == ("create",)',
+            'actions == ("delete",) and address in normal_deletes',
+            'actions == ("delete", "create") and address in normal_replacements',
+            'actions == ("forget",) and address == "google_service_account.build"',
             'raise SystemExit(f"bootstrap plan contains unapproved actions: {bad}")',
         ):
             if policy_text.count(required) != 1:
                 errors.append(f"bootstrap plan policy missing exact guard: {required}")
+        def embedded_set(name):
+            match = re.search(rf"(?ms)^\s*{re.escape(name)}\s*=\s*\{{(.*?)^\s*\}}", policy_text)
+            return set(re.findall(r'"([^"]+)"', match.group(1))) if match else None
+        expected_sets = {
+            "normal_mutable": {
+                "google_iam_workload_identity_pool_provider.github",
+                "google_service_account_iam_member.deploy_runtime_wif",
+                "google_service_account_iam_member.bootstrap_apply_wif",
+                "google_service_account_iam_member.billing_catalog_wif_main",
+                "google_service_account.infra_drift",
+                "google_service_account_iam_member.infra_drift_wif",
+                "google_project_iam_member.infra_drift_viewer",
+                "google_storage_bucket_iam_member.infra_drift_state_reader",
+                "google_secret_manager_secret_iam_member.infra_drift_price_ids_accessor",
+                "google_secret_manager_secret_iam_member.infra_drift_price_ids_viewer",
+                "google_secret_manager_secret.billing_price_ids",
+                "google_secret_manager_secret_iam_member.billing_catalog_price_ids_writer",
+                "google_secret_manager_secret_iam_member.billing_catalog_stripe_api_key_reader",
+                "google_secret_manager_secret_iam_member.billing_catalog_resend_api_key_reader",
+                "google_secret_manager_secret_iam_member.deploy_billing_price_ids_accessor",
+                "google_secret_manager_secret_iam_member.deploy_billing_price_ids_viewer",
+            },
+            "normal_replacements": {
+                "google_service_account_iam_member.deploy_runtime_wif",
+                "google_service_account_iam_member.bootstrap_apply_wif",
+                "google_service_account_iam_member.billing_catalog_wif_main",
+            },
+            "rollback_creates": {
+                "google_service_account_iam_member.deploy_runtime_wif_platform_rollback[0]",
+                "google_service_account_iam_member.bootstrap_apply_wif_platform_rollback[0]",
+                "google_service_account_iam_member.billing_catalog_wif_platform_rollback[0]",
+                "google_storage_bucket_iam_member.deploy_billing_state_reader[0]",
+            },
+        }
+        for name, expected in expected_sets.items():
+            if embedded_set(name) != expected:
+                errors.append(f"bootstrap plan {name} address set drifted")
+        stale_text = stale.get("run", "")
+        if stale.get("if") != "env.OPERATION == 'apply' || env.OPERATION == 'rollback'" or 'git rev-parse HEAD)" = "$EXPECTED_SHA' not in stale_text or '"$tip" = "$EXPECTED_SHA"' not in stale_text:
+            errors.append("bootstrap apply is not rejected when hop main is superseded")
         if "tofu apply" not in apply.get("run", "") or "tfplan" not in apply.get("run", ""):
             errors.append("bootstrap apply does not consume the saved plan")
         if apply.get("if") != "env.OPERATION == 'apply' || env.OPERATION == 'rollback'":
             errors.append("bootstrap apply operation gate drifted")
         proof_text = proof.get("run", "")
-        for required in ("hopmesh/hop", "hopmesh/platform", "roles/iam.serviceAccountTokenCreator", "attributeCondition"):
-            if required not in proof_text:
-                errors.append(f"bootstrap live authority proof missing: {required}")
+        for required in (
+            '"attribute.workflow": "assertion.workflow_ref"',
+            'binding.get("condition") not in (None, {})',
+            'workflow("hopmesh/hop", "runtime-deploy.yml")',
+            'workflow("hopmesh/platform", "handoff-deploy-authority.yml")',
+            '"roles/iam.serviceAccountTokenCreator"',
+            '"roles/iam.serviceAccountOpenIdTokenCreator"',
+            "gcloud storage buckets get-iam-policy",
+            '"roles/storage.objectViewer"',
+            'if set(found_storage) != expected_storage',
+            '"jwksJson" in oidc',
+        ):
+            if proof_text.count(required) != 1:
+                errors.append(f"bootstrap live authority proof missing exact check: {required}")
     except ValueError as error:
         errors.append(str(error))
     return errors

@@ -141,7 +141,7 @@ CI_COVERAGE=(
   "flutter-sdk|none|the endpoint SDK suites are not run here, including the dart analyze and dart format checks that need the Dart SDK"
   "react-native-sdk|none|the React Native SDK typecheck and JS bridge tests are not run here; unlike the other SDKs it has no mirror CI, so ci.yml is its only gate"
   "lowest-supported-bounds|none|the Python + Go lowest-supported-dependency-bounds run (go mod tidy -compat, uv lowest resolution) is not run here; it needs pinned Go 1.22 and Python 3.12 toolchains, and it is what INFRA-013 gates on"
-  "infrastructure|full|both OpenTofu roots format/init/validate, infra-authority guard plus self-test, immutable private-source pin self-test, runtime deploy guard plus self-test, and bootstrap/drift/billing authority guard plus self-test"
+  "infrastructure|full|both OpenTofu roots format/init/validate, infra-authority guard plus self-test, immutable private-source lock check plus self-test, runtime deploy guard plus self-test, and bootstrap/drift/billing authority guard plus self-test"
   "gate|none|the aggregate that depends on the other 21; it exists only in CI and is the ONE required context on main"
 )
 
@@ -245,6 +245,7 @@ fi
 step "infra authority self-test"        bash tools/infra-authority-guard.test.sh
 step "infra authority guard"            python3 tools/infra-authority-guard.py
 step "private source pin self-test"      bash tools/private-source-pin.test.sh
+step "private source pin"                python3 tools/private-source-pin.py verify-lock --lock infra/private-source.lock
 step "runtime deploy self-test"          bash tools/runtime-deploy-guard.test.sh
 step "runtime deploy guard"              python3 tools/runtime-deploy-guard.py
 step "secondary deploy self-test"        bash tools/secondary-deploy-authority-guard.test.sh

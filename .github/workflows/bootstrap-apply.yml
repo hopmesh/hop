@@ -76,17 +76,19 @@ jobs:
       MAX_INSTANCES_PER_REGION: ${{ vars.MAX_INSTANCES_PER_REGION }}
       RELAY_REGION_ALLOWLIST: ${{ vars.RELAY_REGION_ALLOWLIST }}
       OPERATION: ${{ inputs.operation }}
+      EXPECTED_SHA: ${{ github.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: main
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Require canonical main and every non-secret input
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$(git ls-remote origin refs/heads/main | cut -f1)"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test "$EXPECTED_SHA" = "$(git ls-remote origin refs/heads/main | cut -f1)"
           for name in PROJECT_ID BOOTSTRAP_WIF_PROVIDER BOOTSTRAP_SERVICE_ACCOUNT \
             RUNTIME_SERVICE_ACCOUNT BILLING_SERVICE_ACCOUNT RELAYS_ENABLED RELAY_IDENTITY_VERSION \
             EXAMPLE_IDENTITY_VERSION DEPLOYMENT_ENVIRONMENT CLOUD_RUN_INGRESS \
@@ -151,36 +153,76 @@ jobs:
           import json, sys
           plan = json.load(open(sys.argv[1], encoding="utf-8"))
           operation = sys.argv[2]
-          mutable = {
+          normal_mutable = {
               "google_iam_workload_identity_pool_provider.github",
               "google_service_account_iam_member.deploy_runtime_wif",
               "google_service_account_iam_member.bootstrap_apply_wif",
               "google_service_account_iam_member.billing_catalog_wif_main",
+              "google_service_account.infra_drift",
+              "google_service_account_iam_member.infra_drift_wif",
+              "google_project_iam_member.infra_drift_viewer",
+              "google_storage_bucket_iam_member.infra_drift_state_reader",
+              "google_secret_manager_secret_iam_member.infra_drift_price_ids_accessor",
+              "google_secret_manager_secret_iam_member.infra_drift_price_ids_viewer",
               "google_secret_manager_secret.billing_price_ids",
               "google_secret_manager_secret_iam_member.billing_catalog_price_ids_writer",
+              "google_secret_manager_secret_iam_member.billing_catalog_stripe_api_key_reader",
+              "google_secret_manager_secret_iam_member.billing_catalog_resend_api_key_reader",
               "google_secret_manager_secret_iam_member.deploy_billing_price_ids_accessor",
               "google_secret_manager_secret_iam_member.deploy_billing_price_ids_viewer",
+          }
+          normal_replacements = {
+              "google_service_account_iam_member.deploy_runtime_wif",
+              "google_service_account_iam_member.bootstrap_apply_wif",
+              "google_service_account_iam_member.billing_catalog_wif_main",
+          }
+          rollback_creates = {
+              "google_service_account_iam_member.deploy_runtime_wif_platform_rollback[0]",
+              "google_service_account_iam_member.bootstrap_apply_wif_platform_rollback[0]",
+              "google_service_account_iam_member.billing_catalog_wif_platform_rollback[0]",
+              "google_storage_bucket_iam_member.deploy_billing_state_reader[0]",
+          }
+          normal_deletes = rollback_creates | {
               "google_storage_bucket_iam_member.deploy_billing_state_reader",
           }
-          allowed = {(), ("no-op",), ("read",), ("create",), ("update",)}
+          unchanged = {(), ("no-op",), ("read",)}
           bad = []
           for item in plan.get("resource_changes", []):
               address = item.get("address")
-              change = item.get("change", {})
-              actions = tuple(change.get("actions", []))
+              actions = tuple(item.get("change", {}).get("actions", []))
               previous = item.get("previous_address")
               if previous is not None:
                   bad.append((address, "moved", previous))
                   continue
-              if actions == ("delete",) and address == "google_storage_bucket_iam_member.deploy_billing_state_reader" and operation != "rollback":
+              if actions in unchanged:
                   continue
-              if actions not in allowed:
+              if operation == "rollback":
+                  if address == "google_iam_workload_identity_pool_provider.github" and actions == ("update",):
+                      continue
+                  if address in rollback_creates and actions == ("create",):
+                      continue
                   bad.append((address, actions))
-              elif actions not in ((), ("no-op",), ("read",)) and address not in mutable:
-                  bad.append((address, actions))
+                  continue
+              if actions in {("create",), ("update",)} and address in normal_mutable:
+                  continue
+              if actions == ("delete", "create") and address in normal_replacements:
+                  continue
+              if actions == ("delete",) and address in normal_deletes:
+                  continue
+              if actions == ("forget",) and address == "google_service_account.build":
+                  continue
+              bad.append((address, actions))
           if bad:
               raise SystemExit(f"bootstrap plan contains unapproved actions: {bad}")
           PY
+
+      - name: Refuse a superseded bootstrap apply
+        if: env.OPERATION == 'apply' || env.OPERATION == 'rollback'
+        run: |
+          set -euo pipefail
+          tip="$(git ls-remote origin refs/heads/main | cut -f1)"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test "$tip" = "$EXPECTED_SHA" || { echo "::error::bootstrap apply superseded by $tip"; exit 1; }
 
       - id: apply
         name: Apply the saved bootstrap plan
@@ -201,29 +243,85 @@ jobs:
           for item in \
             "$RUNTIME_SERVICE_ACCOUNT:runtime" \
             "$BOOTSTRAP_SERVICE_ACCOUNT:bootstrap" \
-            "$BILLING_SERVICE_ACCOUNT:billing"; do
+            "$BILLING_SERVICE_ACCOUNT:billing" \
+            "hop-infra-drift@$PROJECT_ID.iam.gserviceaccount.com:drift"; do
             account="${item%%:*}"; label="${item##*:}"
             gcloud iam service-accounts get-iam-policy "$account" --format=json > "$RUNNER_TEMP/${label}-iam.json"
           done
-          python3 - "$RUNNER_TEMP" "$OPERATION" "$PROJECT_ID" <<'PY'
+          gcloud storage buckets get-iam-policy "gs://$PROJECT_ID-tfstate" \
+            --format=json > "$RUNNER_TEMP/runtime-state-iam.json"
+          python3 - "$RUNNER_TEMP" "$OPERATION" "$PROJECT_ID" "$RUNTIME_SERVICE_ACCOUNT" <<'PY'
           import json, pathlib, sys
-          root, operation, project = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+          root, operation, project, runtime_sa = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
           provider = json.load(open(root / "provider.json", encoding="utf-8"))
           final = 'assertion.repository == "hopmesh/hop"'
           rollback = 'assertion.repository == "hopmesh/platform" || assertion.repository == "hopmesh/hop"'
-          expected = rollback if operation == "rollback" else final
-          if provider.get("attributeCondition") != expected or provider.get("state") != "ACTIVE":
+          expected_condition = rollback if operation == "rollback" else final
+          if provider.get("attributeCondition") != expected_condition or provider.get("state") != "ACTIVE":
               raise SystemExit("live WIF provider condition/state does not match the requested authority phase")
+          mapping = {
+              "google.subject": "assertion.sub",
+              "attribute.repository": "assertion.repository",
+              "attribute.ref": "assertion.ref",
+              "attribute.workflow": "assertion.workflow_ref",
+          }
+          if provider.get("attributeMapping") != mapping:
+              raise SystemExit("live WIF provider attribute mapping drifted")
           oidc = provider.get("oidc", {})
-          if oidc.get("issuerUri") != "https://token.actions.githubusercontent.com" or oidc.get("jwksJson") or oidc.get("allowedAudiences"):
+          if oidc.get("issuerUri") != "https://token.actions.githubusercontent.com" or "jwksJson" in oidc or oidc.get("allowedAudiences") not in (None, []):
               raise SystemExit("live WIF provider OIDC verification settings drifted")
-          wanted = f"principalSet://iam.googleapis.com/projects/149923095434/locations/global/workloadIdentityPools/github-actions/attribute.ref/refs/heads/main"
+          pool = "principalSet://iam.googleapis.com/projects/149923095434/locations/global/workloadIdentityPools/github-actions/attribute.workflow"
+          def workflow(repo, name):
+              return f"{pool}/{repo}/.github/workflows/{name}@refs/heads/main"
+          expected_members = {
+              "runtime": {workflow("hopmesh/hop", "runtime-deploy.yml")},
+              "bootstrap": {workflow("hopmesh/hop", "bootstrap-apply.yml")},
+              "billing": {workflow("hopmesh/hop", "billing-catalog.yml")},
+              "drift": {workflow("hopmesh/hop", "infra-drift.yml")},
+          }
+          if operation == "rollback":
+              expected_members["runtime"].add(workflow("hopmesh/platform", "runtime-deploy.yml"))
+              expected_members["bootstrap"].add(workflow("hopmesh/platform", "handoff-deploy-authority.yml"))
+              expected_members["billing"].add(workflow("hopmesh/platform", "billing-catalog.yml"))
           risky = {"roles/iam.workloadIdentityUser", "roles/iam.serviceAccountTokenCreator", "roles/iam.serviceAccountOpenIdTokenCreator"}
-          for label in ("runtime", "bootstrap", "billing"):
+          for label, wanted in expected_members.items():
               policy = json.load(open(root / f"{label}-iam.json", encoding="utf-8"))
-              found = [(b.get("role"), member) for b in policy.get("bindings", []) for member in b.get("members", []) if b.get("role") in risky]
-              if found != [("roles/iam.workloadIdentityUser", wanted)]:
+              found = []
+              for binding in policy.get("bindings", []):
+                  if binding.get("role") not in risky:
+                      continue
+                  if binding.get("condition") not in (None, {}):
+                      raise SystemExit(f"{label} live auth grant has an IAM condition")
+                  for member in binding.get("members", []):
+                      found.append((binding.get("role"), member))
+              expected = {("roles/iam.workloadIdentityUser", member) for member in wanted}
+              if set(found) != expected or len(found) != len(expected):
                   raise SystemExit(f"{label} live auth grants drifted")
+          bucket = json.load(open(root / "runtime-state-iam.json", encoding="utf-8"))
+          deploy_member = f"serviceAccount:{runtime_sa}"
+          found_storage = []
+          for binding in bucket.get("bindings", []):
+              if deploy_member not in binding.get("members", []):
+                  continue
+              condition = binding.get("condition") or {}
+              found_storage.append((binding.get("role"), condition.get("title"), condition.get("description"), condition.get("expression")))
+          expected_storage = {
+              (
+                  "roles/storage.objectUser",
+                  "runtime-state-only",
+                  "The deployer can list the backend bucket and mutate only runtime state objects.",
+                  f"resource.name == 'projects/_/buckets/{project}-tfstate' || resource.name.startsWith('projects/_/buckets/{project}-tfstate/objects/relay-fleet/')",
+              )
+          }
+          if operation == "rollback":
+              expected_storage.add((
+                  "roles/storage.objectViewer",
+                  "billing-state-read-only",
+                  "The deployer may read (never write) the isolated billing state for price ids.",
+                  f'resource.name.startsWith("projects/_/buckets/{project}-tfstate/objects/billing/")',
+              ))
+          if set(found_storage) != expected_storage or len(found_storage) != len(expected_storage):
+              raise SystemExit("runtime live storage grants drifted")
           print(f"verified live authority phase {operation}")
           PY
 
