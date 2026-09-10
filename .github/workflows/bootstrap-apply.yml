@@ -213,6 +213,8 @@ jobs:
                       continue
                   if address in rollback_creates and actions == ("create",):
                       continue
+                  if address in cleanup_replacements and actions == ("delete", "create"):
+                      continue
                   bad.append((address, actions))
                   continue
               if actions in {("create",), ("update",)} and address in normal_mutable:

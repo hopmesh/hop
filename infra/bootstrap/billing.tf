@@ -163,6 +163,8 @@ resource "google_iam_workload_identity_pool_provider" "github" {
     issuer_uri        = "https://token.actions.githubusercontent.com"
     allowed_audiences = []
   }
+
+  depends_on = [terraform_data.remove_legacy_iam_bindings]
 }
 
 resource "google_service_account" "billing_catalog_apply" {

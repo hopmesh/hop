@@ -738,6 +738,8 @@ def check(root):
     provider = resource_block(bootstrap, "google_iam_workload_identity_pool_provider", "github") or ""
     if not has_exact_top_level_assignment(provider, "attribute_condition", "local.github_repository_conditions[var.github_authority_phase]"):
         errors.append("bootstrap WIF provider is not controlled by the closed authority phase")
+    if not has_exact_top_level_assignment(provider, "depends_on", "[terraform_data.remove_legacy_iam_bindings]"):
+        errors.append("bootstrap WIF provider can advance before legacy authority cleanup")
     if top_level_assignment_values(provider, "jwks_json") or top_level_assignment_values(provider, "allowed_audiences"):
         errors.append("bootstrap WIF provider may not set top-level JWKS or audiences")
     if not has_exact_top_level_assignment(provider, "disabled", "false"):

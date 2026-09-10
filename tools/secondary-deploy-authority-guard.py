@@ -288,6 +288,7 @@ def check_bootstrap(root: Path) -> list[str]:
             'rollback_creates = {',
             'if operation == "rollback":',
             'address in rollback_creates and actions == ("create",)',
+            'address in cleanup_replacements and actions == ("delete", "create")',
             'actions == ("delete",) and address in normal_deletes',
             'actions == ("create", "delete") and address in normal_replacements',
             'actions == ("delete", "create") and address in cleanup_replacements',
