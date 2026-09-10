@@ -1,5 +1,5 @@
 {
-  "_comment": "Canonical CI job set (job names, in .github/workflows/ci.yml order). tools/check-required-checks.sh keeps this in lockstep with ci.yml; tools/release-provenance.py verifies a mirror release tag's CI ran every one of these. There is no deploy gate in this repo: the runtime deploy moved to hopmesh/platform with the infra tree, and branch protection requires only the aggregate 'CI gate'.",
+  "_comment": "Canonical CI job set in ci.yml order. tools/check-required-checks.sh keeps this in lockstep; tools/release-provenance.py verifies every release tag ran every check. The CI gate is the one required branch-protection context, and a successful push-main run is the only automatic runtime deploy trigger.",
   "required_checks": [
     "Detect changed areas",
     "Rust (test · clippy · fmt)",
@@ -22,6 +22,7 @@
     "Flutter endpoint SDK (proofs)",
     "Lowest supported dependency bounds (Python + Go)",
     "React Native SDK (typecheck + tests)",
+    "Infrastructure validation",
     "CI gate"
   ]
 }

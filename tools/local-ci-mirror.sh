@@ -141,6 +141,7 @@ CI_COVERAGE=(
   "flutter-sdk|none|the endpoint SDK suites are not run here, including the dart analyze and dart format checks that need the Dart SDK"
   "react-native-sdk|none|the React Native SDK typecheck and JS bridge tests are not run here; unlike the other SDKs it has no mirror CI, so ci.yml is its only gate"
   "lowest-supported-bounds|none|the Python + Go lowest-supported-dependency-bounds run (go mod tidy -compat, uv lowest resolution) is not run here; it needs pinned Go 1.22 and Python 3.12 toolchains, and it is what INFRA-013 gates on"
+  "infrastructure|full|both OpenTofu roots format/init/validate, infra-authority guard plus self-test, immutable private-source pin self-test, runtime deploy guard plus self-test, and bootstrap/drift/billing authority guard plus self-test"
   "gate|none|the aggregate that depends on the other 21; it exists only in CI and is the ONE required context on main"
 )
 
@@ -228,6 +229,24 @@ step "worktree checkpoints"           bash tools/check-worktree-checkpoints.sh
 step "test-module-inline guard self-test" bash tools/test-module-inline-guard.test.sh
 step "test-module-inline guard"           bash tools/test-module-inline-guard.sh
 step "integration-content guard self-test" bash tools/integration-content-guard.test.sh
+
+# --- CI's infrastructure job --------------------------------------------------------------------
+if have tofu; then
+  step "tofu fmt"                       tofu -chdir=infra fmt -check -recursive
+  step "tofu init runtime"              tofu -chdir=infra init -backend=false -input=false
+  step "tofu validate runtime"          tofu -chdir=infra validate
+  step "tofu init bootstrap"            tofu -chdir=infra/bootstrap init -backend=false -input=false
+  step "tofu validate bootstrap"        tofu -chdir=infra/bootstrap validate
+else
+  skip "OpenTofu validation" "tofu not installed"
+fi
+step "infra authority self-test"        bash tools/infra-authority-guard.test.sh
+step "infra authority guard"            python3 tools/infra-authority-guard.py
+step "private source pin self-test"      bash tools/private-source-pin.test.sh
+step "runtime deploy self-test"          bash tools/runtime-deploy-guard.test.sh
+step "runtime deploy guard"              python3 tools/runtime-deploy-guard.py
+step "secondary deploy self-test"        bash tools/secondary-deploy-authority-guard.test.sh
+step "secondary deploy guard"            python3 tools/secondary-deploy-authority-guard.py
 
 # --- CI's Kotlin SDK + Android jobs --------------------------------------------------------------
 android_env() {

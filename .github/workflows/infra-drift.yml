@@ -1,0 +1,117 @@
+name: Infrastructure drift (hop canonical)
+
+on:
+  pull_request:
+    paths:
+      - infra/**
+      - .github/workflows/infra-drift.yml
+      - tools/secondary-deploy-authority-guard.py
+      - tools/secondary-deploy-authority-guard.test.sh
+  schedule:
+    - cron: "0 11 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: hop-infra-drift
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Drift workflow authority validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate secondary deployment authority
+        run: |
+          python3 tools/secondary-deploy-authority-guard.py
+          bash tools/secondary-deploy-authority-guard.test.sh
+
+  bootstrap:
+    name: Bootstrap authority matches hop main
+    needs: validate
+    if: github.event_name != 'pull_request' && github.repository == 'hopmesh/hop' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      BOOTSTRAP_WIF_PROVIDER: ${{ vars.GCP_BOOTSTRAP_WIF_PROVIDER }}
+      BOOTSTRAP_SERVICE_ACCOUNT: ${{ vars.GCP_BOOTSTRAP_SERVICE_ACCOUNT }}
+      RELAYS_ENABLED: ${{ vars.RELAYS_ENABLED }}
+      RELAY_IDENTITY_VERSION: ${{ vars.RELAY_IDENTITY_VERSION }}
+      EXAMPLE_IDENTITY_VERSION: ${{ vars.EXAMPLE_IDENTITY_VERSION }}
+      DEPLOYMENT_ENVIRONMENT: ${{ vars.DEPLOYMENT_ENVIRONMENT }}
+      CLOUD_RUN_INGRESS: ${{ vars.CLOUD_RUN_INGRESS }}
+      MAX_INSTANCES_PER_REGION: ${{ vars.MAX_INSTANCES_PER_REGION }}
+      RELAY_REGION_ALLOWLIST: ${{ vars.RELAY_REGION_ALLOWLIST }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require canonical main and all non-secret inputs
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$(git ls-remote origin refs/heads/main | cut -f1)"
+          for name in PROJECT_ID BOOTSTRAP_WIF_PROVIDER BOOTSTRAP_SERVICE_ACCOUNT RELAYS_ENABLED \
+            RELAY_IDENTITY_VERSION EXAMPLE_IDENTITY_VERSION DEPLOYMENT_ENVIRONMENT \
+            CLOUD_RUN_INGRESS MAX_INSTANCES_PER_REGION RELAY_REGION_ALLOWLIST; do
+            test -n "${!name}" || { echo "::error::$name is not configured"; exit 1; }
+          done
+
+      - name: Authenticate bootstrap read authority
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+          workload_identity_provider: ${{ env.BOOTSTRAP_WIF_PROVIDER }}
+          service_account: ${{ env.BOOTSTRAP_SERVICE_ACCOUNT }}
+
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: "1.12.3"
+          tofu_wrapper: false
+
+      - name: Materialize reviewed non-secret bootstrap inputs
+        working-directory: infra/bootstrap
+        run: |
+          set -euo pipefail
+          cat > ci.auto.tfvars <<EOF
+          github_repository        = "hopmesh/hop"
+          runtime_state_bucket     = "hop-mesh-tfstate"
+          runtime_state_prefix     = "relay-fleet"
+          relay_identity_version   = "$RELAY_IDENTITY_VERSION"
+          example_identity_version = "$EXAMPLE_IDENTITY_VERSION"
+          deployment_environment   = "$DEPLOYMENT_ENVIRONMENT"
+          relays_enabled           = $RELAYS_ENABLED
+          cloud_run_ingress        = "$CLOUD_RUN_INGRESS"
+          max_instances_per_region = $MAX_INSTANCES_PER_REGION
+          region_allowlist         = $RELAY_REGION_ALLOWLIST
+          relay_domain             = "relay.hopme.sh"
+          EOF
+          chmod 600 ci.auto.tfvars
+
+      - name: Fail distinctly on auth, backend, or bootstrap drift
+        working-directory: infra/bootstrap
+        run: |
+          set -euo pipefail
+          gcloud auth print-access-token >/dev/null 2>/tmp/auth-error || {
+            echo "::error::bootstrap WIF authentication failed"
+            cat /tmp/auth-error
+            exit 1
+          }
+          tofu init -input=false
+          set +e
+          tofu plan -input=false -no-color -detailed-exitcode -lock=false >/tmp/bootstrap-drift.log 2>&1
+          rc=$?
+          set -e
+          case "$rc" in
+            0) echo "bootstrap authority matches hop main" ;;
+            2) cat /tmp/bootstrap-drift.log; echo "::error::bootstrap drift detected"; exit 1 ;;
+            *) cat /tmp/bootstrap-drift.log; echo "::error::bootstrap drift check failed"; exit "$rc" ;;
+          esac

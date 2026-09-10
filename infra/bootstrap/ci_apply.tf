@@ -40,8 +40,6 @@ locals {
     "roles/cloudsql.admin",
   ])
 
-  # Canonical main of the repository admitted by the provider. Pull request refs do not match.
-  github_main_wif_member = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.ref/refs/heads/main"
 }
 
 resource "google_service_account" "bootstrap_apply" {

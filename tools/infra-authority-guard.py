@@ -63,7 +63,9 @@ def resource_types(text):
 
 
 def local_role_set(text, name):
-    match = re.search(rf"\b{name}\s*=\s*toset\(\[(.*?)\]\)", text, re.DOTALL)
+    clean = "\n".join(strip_hcl_comment(line) for line in text.splitlines())
+    clean = strip_hcl_heredocs(clean)
+    match = re.search(rf"^\s*{re.escape(name)}\s*=\s*toset\(\[(.*?)\]\)", clean, re.DOTALL | re.MULTILINE)
     if not match:
         return None
     return re.findall(r'"(roles/[^"\s]+)"', match.group(1))
@@ -162,6 +164,36 @@ def balanced_block(text, marker):
             if depth == 0:
                 return text[start : index + 1]
     return None
+
+def top_level_block(block, marker):
+    """Return one active nested block declared at depth one."""
+    depth = 0
+    offset = 0
+    found = []
+    for raw_line in block.splitlines(keepends=True):
+        line = strip_hcl_comment(raw_line.rstrip("\r\n"))
+        if depth == 1 and re.match(rf'^\s*{re.escape(marker)}\s*\{{', line):
+            found.append(balanced_block(block[offset:], marker))
+        quoted = False
+        escaped = False
+        for char in line:
+            if quoted:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    quoted = False
+            elif char == '"':
+                quoted = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+        offset += len(raw_line)
+    if len(found) != 1:
+        return None
+    return found[0]
 
 def repeated_blocks(text, marker):
     blocks = []
@@ -310,24 +342,18 @@ def check(root):
     if backends != ["gcs"]:
         errors.append(f"runtime backend drifted: {backends}")
     versions_path = root / "infra" / "versions.tf"
-    versions = versions_path.read_text(encoding="utf-8") if versions_path.is_file() else ""
-    backend = re.search(r'backend\s+"gcs"\s*\{([^{}]*)\}', versions, re.DOTALL)
-    backend_keys = re.findall(r'^\s*([A-Za-z_][A-Za-z0-9_-]*)\s*=', backend.group(1), re.MULTILINE) if backend else []
-    if len(backend_keys) != 2 or set(backend_keys) != {"bucket", "prefix"}:
-        errors.append("runtime GCS backend may configure only the bootstrap-overridden bucket and prefix")
-    backend_values = dict(
-        re.findall(r'^\s*(bucket|prefix)\s*=\s*"([^"]+)"\s*$', backend.group(1), re.MULTILINE)
-    ) if backend else {}
-    if backend_values != {"bucket": "hop-mesh-tfstate", "prefix": "relay-fleet"}:
-        errors.append(f"runtime GCS backend values drifted: {backend_values}")
+    versions_raw = versions_path.read_text(encoding="utf-8") if versions_path.is_file() else ""
+    versions = strip_hcl_heredocs(versions_raw)
+    backend_block = balanced_block(versions, 'backend "gcs"') or ""
+    backend_keys = [key for key, _ in top_level_assignment_pairs(backend_block)]
+    if backend_keys != ["bucket", "prefix"]:
+        errors.append("runtime GCS backend may configure only bucket and prefix")
+    if not has_exact_top_level_assignment(backend_block, "bucket", '"hop-mesh-tfstate"') or not has_exact_top_level_assignment(backend_block, "prefix", '"relay-fleet"'):
+        errors.append("runtime GCS backend values drifted")
     bootstrap_versions_path = root / "infra" / "bootstrap" / "versions.tf"
-    bootstrap_versions = bootstrap_versions_path.read_text(encoding="utf-8") if bootstrap_versions_path.is_file() else ""
-    bootstrap_backend = re.search(r'backend\s+"gcs"\s*\{([^{}]*)\}', bootstrap_versions, re.DOTALL)
-    bootstrap_backend_values = dict(
-        re.findall(r'^\s*(bucket|prefix)\s*=\s*"([^"]+)"\s*$', bootstrap_backend.group(1), re.MULTILINE)
-    ) if bootstrap_backend else {}
-    if bootstrap_backend_values != {"bucket": "hop-mesh-tfstate", "prefix": "bootstrap"}:
-        errors.append(f"bootstrap GCS backend values drifted: {bootstrap_backend_values}")
+    bootstrap_versions_raw = bootstrap_versions_path.read_text(encoding="utf-8") if bootstrap_versions_path.is_file() else ""
+    bootstrap_versions = strip_hcl_heredocs(bootstrap_versions_raw)
+    bootstrap_backend = balanced_block(bootstrap_versions, 'backend "gcs"')
     cloud_run_declarations = [
         declaration for declaration in resource_declarations if declaration[0].startswith("google_cloud_run")
     ]
@@ -428,9 +454,18 @@ def check(root):
     # applier cannot manage a deny policy without an ORG-level grant. Protection now rests
     # on the allow side, asserted directly above: only the relay runtime holds the accessor,
     # and the deploy identity explicitly does not.
-    deploy_state = resource_block(iam, "google_storage_bucket_iam_member", "deploy_state")
-    if not deploy_state or "objects/${var.runtime_state_prefix}/" not in deploy_state:
-        errors.append("deploy state access is not scoped to the trusted runtime prefix")
+    deploy_state = resource_block(iam, "google_storage_bucket_iam_member", "deploy_state") or ""
+    deploy_state_condition = top_level_block(deploy_state, "condition") or ""
+    expected_runtime_state_condition = '"resource.name == \'projects/_/buckets/${var.runtime_state_bucket}\' || resource.name.startsWith(\'projects/_/buckets/${var.runtime_state_bucket}/objects/${var.runtime_state_prefix}/\')"'
+    if not has_exact_top_level_assignment(deploy_state, "bucket", "var.runtime_state_bucket") or not has_exact_top_level_assignment(deploy_state, "role", '"roles/storage.objectUser"') or not has_exact_top_level_assignment(deploy_state, "member", '"serviceAccount:${google_service_account.deploy.email}"') or not has_exact_top_level_assignment(deploy_state_condition, "expression", expected_runtime_state_condition):
+        errors.append("deploy state access is not scoped exactly to the trusted runtime prefix")
+    deploy_bucket_grants = []
+    for name in [name for kind, name in re.findall(r'^\s*resource\s+"([^"]+)"\s+"([^"]+)"\s*\{', bootstrap if "bootstrap" in locals() else iam, re.MULTILINE) if kind == "google_storage_bucket_iam_member"]:
+        block = resource_block(bootstrap if "bootstrap" in locals() else iam, "google_storage_bucket_iam_member", name) or ""
+        if any("google_service_account.deploy.email" in value for value in top_level_assignment_values(block, "member")):
+            deploy_bucket_grants.append(name)
+    if deploy_bucket_grants and deploy_bucket_grants != ["deploy_state"]:
+        errors.append(f"hop-deploy has additional storage grants: {sorted(deploy_bucket_grants)}")
 
     # Cutover invariants. These pin the complete state-owning surface, not only the four Cloud Run
     # addresses. An omitted load balancer, DNS, certificate, observability, or removed-state address
@@ -483,7 +518,7 @@ def check(root):
         if not has_exact_top_level_assignment(price_data, key, expected):
             errors.append(f"billing price id data source drifted: {key}")
     price_version = variable_block(runtime, "billing_price_ids_version") or ""
-    price_validation = balanced_block(price_version, "validation") or ""
+    price_validation = top_level_block(price_version, "validation") or ""
     if not has_exact_top_level_assignment(
         price_validation,
         "condition",
@@ -507,13 +542,13 @@ def check(root):
                 errors.append(f"runtime {name} service cardinality drifted")
         elif top_level_assignment_values(header, "count") or top_level_assignment_values(header, "for_each"):
             errors.append(f"runtime singleton {name} gained count or for_each")
-        labels = balanced_block(header, "labels =") or ""
+        labels = top_level_block(header, "labels =") or ""
         if not has_exact_top_level_assignment(labels, '"hop-source-sha"', "var.deployment_source_sha"):
             errors.append(f"runtime {name} lacks the canonical hop source label")
         if not has_exact_top_level_assignment(labels, '"hop-private-source-sha"', "var.private_source_sha"):
             errors.append(f"runtime {name} lacks the pinned private source label")
     private_source = variable_block(runtime, "private_source_sha") or ""
-    private_validation = balanced_block(private_source, "validation") or ""
+    private_validation = top_level_block(private_source, "validation") or ""
     if not has_exact_top_level_assignment(
         private_validation,
         "condition",
@@ -543,7 +578,12 @@ def check(root):
         re.compile(r"\$[0-9]+\.[0-9]{2}\b"),
         re.compile(r'^\s*resource\s+"stripe_', re.MULTILINE),
     )
-    disclosure_files = list((root / "infra").rglob("*")) + [
+    for generated in (root / "infra" / ".terraform", root / "infra" / "bootstrap" / ".terraform"):
+        if generated.is_symlink():
+            errors.append(f"generated provider directory may not be a symlink: {generated.relative_to(root)}")
+    disclosure_files = [
+        path for path in (root / "infra").rglob("*") if ".terraform" not in path.parts
+    ] + [
         root / "tools" / "private-source-pin.py",
         root / "tools" / "private-source-pin.test.sh",
     ]
@@ -609,15 +649,41 @@ def check(root):
         errors.append("bootstrap GCS backend values drifted")
 
     provider = resource_block(bootstrap, "google_iam_workload_identity_pool_provider", "github") or ""
-    if not has_exact_top_level_assignment(provider, "attribute_condition", '"assertion.repository == \\\"hopmesh/hop\\\""'):
-        errors.append("bootstrap WIF provider does not admit only hopmesh/hop")
+    if not has_exact_top_level_assignment(provider, "attribute_condition", "local.github_repository_conditions[var.github_authority_phase]"):
+        errors.append("bootstrap WIF provider is not controlled by the closed authority phase")
+    if top_level_assignment_values(provider, "jwks_json") or top_level_assignment_values(provider, "allowed_audiences"):
+        errors.append("bootstrap WIF provider may not set top-level JWKS or audiences")
+    if not has_exact_top_level_assignment(provider, "disabled", "false"):
+        errors.append("bootstrap WIF provider must remain enabled")
+    mapping = top_level_block(provider, "attribute_mapping =") or ""
+    if top_level_assignment_pairs(mapping) != [
+        ('"google.subject"', '"assertion.sub"'),
+        ('"attribute.repository"', '"assertion.repository"'),
+        ('"attribute.ref"', '"assertion.ref"'),
+    ]:
+        errors.append("bootstrap WIF attribute mapping drifted")
+    oidc = top_level_block(provider, "oidc") or ""
+    if not has_exact_top_level_assignment(oidc, "issuer_uri", '"https://token.actions.githubusercontent.com"') or not has_exact_top_level_assignment(oidc, "allowed_audiences", "[]") or top_level_assignment_values(oidc, "jwks_json"):
+        errors.append("bootstrap WIF OIDC verification settings drifted")
+    phase = variable_block(bootstrap, "github_authority_phase") or ""
+    phase_validation = top_level_block(phase, "validation") or ""
+    if not has_exact_top_level_assignment(phase, "default", '"hop"') or not has_exact_top_level_assignment(phase_validation, "condition", 'contains(["handoff", "hop"], var.github_authority_phase)'):
+        errors.append("bootstrap authority phase is not hop-only by default")
+    for expected_line in (
+        'github_platform_repository = "hopmesh/platform"',
+        'github_hop_repository      = "hopmesh/hop"',
+        'handoff = "assertion.repository == \\\"${local.github_platform_repository}\\\" || assertion.repository == \\\"${local.github_hop_repository}\\\""',
+        'hop     = "assertion.repository == \\\"${local.github_hop_repository}\\\""',
+    ):
+        if len(re.findall(rf'^\s*{re.escape(expected_line)}\s*$', bootstrap, re.MULTILINE)) != 1:
+            errors.append(f"bootstrap authority state machine drifted: {expected_line}")
     github_repository = variable_block(bootstrap, "github_repository") or ""
-    github_validation = balanced_block(github_repository, "validation") or ""
+    github_validation = top_level_block(github_repository, "validation") or ""
     if not has_exact_top_level_assignment(github_repository, "default", '"hopmesh/hop"') or not has_exact_top_level_assignment(github_validation, "condition", 'var.github_repository == "hopmesh/hop"'):
         errors.append("bootstrap github_repository is not fixed to hopmesh/hop")
     for var_name, expected in (("runtime_state_bucket", '"hop-mesh-tfstate"'), ("runtime_state_prefix", '"relay-fleet"')):
         block = variable_block(bootstrap, var_name) or ""
-        validation = balanced_block(block, "validation") or ""
+        validation = top_level_block(block, "validation") or ""
         if not has_exact_top_level_assignment(block, "default", expected) or not has_exact_top_level_assignment(validation, "condition", f"var.{var_name} == {expected}"):
             errors.append(f"bootstrap {var_name} is not fixed")
     main_members = re.findall(r'^\s*github_main_wif_member\s*=\s*(.*?)\s*$', bootstrap, re.MULTILINE)
@@ -628,11 +694,21 @@ def check(root):
         block = resource_block(bootstrap, "google_service_account_iam_member", name) or ""
         if not has_exact_top_level_assignment(block, "member", "local.github_main_wif_member"):
             errors.append(f"bootstrap WIF binding {name} is not main-ref scoped")
+    bootstrap_resources = re.findall(r'^\s*resource\s+"([^"]+)"\s+"([^"]+)"\s*\{', bootstrap, re.MULTILINE)
+    wif_grants = []
+    for kind, name in bootstrap_resources:
+        if kind != "google_service_account_iam_member":
+            continue
+        block = resource_block(bootstrap, kind, name) or ""
+        if top_level_assignment_values(block, "role") == ['"roles/iam.workloadIdentityUser"']:
+            wif_grants.append(name)
+    if sorted(wif_grants) != ["billing_catalog_wif_main", "bootstrap_apply_wif", "deploy_runtime_wif"]:
+        errors.append(f"bootstrap WIF grant set drifted: {sorted(wif_grants)}")
 
     price_secret = resource_block(bootstrap, "google_secret_manager_secret", "billing_price_ids") or ""
-    price_replication = balanced_block(price_secret, "replication") or ""
-    price_lifecycle = balanced_block(price_secret, "lifecycle") or ""
-    if not has_exact_top_level_assignment(price_secret, "secret_id", '"hop-billing-price-ids"') or balanced_block(price_replication, "auto") is None or not has_exact_top_level_assignment(price_lifecycle, "prevent_destroy", "true"):
+    price_replication = top_level_block(price_secret, "replication") or ""
+    price_lifecycle = top_level_block(price_secret, "lifecycle") or ""
+    if not has_exact_top_level_assignment(price_secret, "secret_id", '"hop-billing-price-ids"') or top_level_block(price_replication, "auto") is None or not has_exact_top_level_assignment(price_lifecycle, "prevent_destroy", "true"):
         errors.append("billing price id secret container drifted")
     expected_price_grants = {
         "billing_catalog_price_ids_writer": ("google_service_account.billing_catalog_apply.email", '"roles/secretmanager.secretVersionAdder"'),
@@ -658,18 +734,41 @@ def check(root):
         errors.append(f"hop-deploy secret grants are not exclusive to billing price ids: {sorted(deploy_secret_grants)}")
     if catalog_price_writers != ["billing_catalog_price_ids_writer"]:
         errors.append(f"SecretVersionAdder grants drifted: {sorted(catalog_price_writers)}")
+    forbidden_secret_iam = [
+        f"{kind}.{name}" for kind, name in bootstrap_resources
+        if kind in {"google_secret_manager_secret_iam_binding", "google_secret_manager_secret_iam_policy"}
+    ]
+    if forbidden_secret_iam:
+        errors.append(f"bootstrap uses authoritative secret IAM resources: {sorted(forbidden_secret_iam)}")
     if resource_block(bootstrap, "google_storage_bucket_iam_member", "deploy_billing_state_reader"):
         errors.append("hop-deploy retains forbidden read access to private billing state")
     billing_state = resource_block(bootstrap, "google_storage_bucket_iam_member", "billing_catalog_state") or ""
-    billing_condition = balanced_block(billing_state, "condition") or ""
+    billing_condition = top_level_block(billing_state, "condition") or ""
     if not has_exact_top_level_assignment(billing_state, "bucket", "var.runtime_state_bucket") or not has_exact_top_level_assignment(billing_state, "role", '"roles/storage.objectAdmin"') or not has_exact_top_level_assignment(billing_state, "member", '"serviceAccount:${google_service_account.billing_catalog_apply.email}"') or not has_exact_top_level_assignment(billing_condition, "expression", '"resource.name == \\\"projects/_/buckets/${var.runtime_state_bucket}\\\" || resource.name.startsWith(\\\"projects/_/buckets/${var.runtime_state_bucket}/objects/billing/\\\")"'):
         errors.append("billing catalog state access drifted")
+    deploy_bucket_grants = []
+    for kind, name in bootstrap_resources:
+        if kind != "google_storage_bucket_iam_member":
+            continue
+        block = resource_block(bootstrap, kind, name) or ""
+        if any("google_service_account.deploy.email" in value for value in top_level_assignment_values(block, "member")):
+            deploy_bucket_grants.append(name)
+    if deploy_bucket_grants != ["deploy_state"]:
+        errors.append(f"hop-deploy storage grant set drifted: {sorted(deploy_bucket_grants)}")
+
+    bootstrap_removed_blocks = repeated_blocks(bootstrap, "removed")
+    if len(bootstrap_removed_blocks) != 1:
+        errors.append(f"bootstrap removed block count drifted: {len(bootstrap_removed_blocks)}")
+    for block in bootstrap_removed_blocks:
+        lifecycle = top_level_block(block, "lifecycle") or ""
+        if not has_exact_top_level_assignment(lifecycle, "destroy", "false"):
+            errors.append("every bootstrap removed address must keep lifecycle destroy = false")
 
     removed_blocks = repeated_blocks(runtime, "removed")
     if len(removed_blocks) != 20:
         errors.append(f"runtime removed block count drifted: {len(removed_blocks)}")
     for block in removed_blocks:
-        lifecycle = balanced_block(block, "lifecycle") or ""
+        lifecycle = top_level_block(block, "lifecycle") or ""
         if not has_exact_top_level_assignment(lifecycle, "destroy", "false"):
             errors.append("every removed address must keep lifecycle destroy = false")
             break

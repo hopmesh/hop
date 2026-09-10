@@ -109,12 +109,27 @@ resource "google_project_iam_member" "billingd_bigquery" {
   member  = "serviceAccount:${google_service_account.billingd.email}"
 }
 
-# GitHub Actions exchanges repository-scoped OIDC tokens for short-lived credentials. The catalog
-# identity can mutate only objects under the billing/ state prefix and has no Stripe or project role.
+# Deployment authority is a closed state machine. Normal plans use terminal hop-only authority. An
+# explicit rollback dispatched FROM hop may temporarily re-admit platform main; no phase admits the
+# retired monorepo, a branch, or a pull-request ref.
+locals {
+  github_platform_repository = "hopmesh/platform"
+  github_hop_repository      = "hopmesh/hop"
+  github_repository_conditions = {
+    handoff = "assertion.repository == \"${local.github_platform_repository}\" || assertion.repository == \"${local.github_hop_repository}\""
+    hop     = "assertion.repository == \"${local.github_hop_repository}\""
+  }
+  github_main_wif_member = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.ref/refs/heads/main"
+}
+
 resource "google_iam_workload_identity_pool" "github" {
   workload_identity_pool_id = "github-actions"
   display_name              = "GitHub Actions"
-  description               = "OIDC federation for hopmesh/hop GitHub Actions workflows."
+  description               = "GitHub Actions OIDC federation for Hop deployment workflows."
+
+  lifecycle {
+    ignore_changes = [description]
+  }
 
   depends_on = [google_project_service.this["iam.googleapis.com"]]
 }
@@ -123,6 +138,7 @@ resource "google_iam_workload_identity_pool_provider" "github" {
   workload_identity_pool_id          = google_iam_workload_identity_pool.github.workload_identity_pool_id
   workload_identity_pool_provider_id = "github"
   display_name                       = "GitHub OIDC"
+  disabled                           = false
 
   attribute_mapping = {
     "google.subject"       = "assertion.sub"
@@ -130,10 +146,11 @@ resource "google_iam_workload_identity_pool_provider" "github" {
     "attribute.ref"        = "assertion.ref"
   }
 
-  attribute_condition = "assertion.repository == \"hopmesh/hop\""
+  attribute_condition = local.github_repository_conditions[var.github_authority_phase]
 
   oidc {
-    issuer_uri = "https://token.actions.githubusercontent.com"
+    issuer_uri        = "https://token.actions.githubusercontent.com"
+    allowed_audiences = []
   }
 }
 

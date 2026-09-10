@@ -36,7 +36,7 @@ bad() {
 bad short '{"repository":"hopmesh/platform","commit":"0123456"}'
 bad branch '{"repository":"hopmesh/platform","commit":"main"}'
 bad uppercase '{"repository":"hopmesh/platform","commit":"0123456789ABCDEF0123456789ABCDEF01234567"}'
-bad wrong_repo '{"repository":"hopmesh/monorepo","commit":"0123456789abcdef0123456789abcdef01234567"}'
+bad wrong_repo '{"repository":"hopmesh/legacy","commit":"0123456789abcdef0123456789abcdef01234567"}'
 bad extra_field '{"repository":"hopmesh/platform","commit":"0123456789abcdef0123456789abcdef01234567","ref":"main"}'
 bad whitespace_value '{"repository":" hopmesh/platform","commit":"0123456789abcdef0123456789abcdef01234567"}'
 ln -s "$valid" "$TMP/link.lock"
@@ -70,7 +70,7 @@ expect pass exact_checkout python3 "$CHECK" verify-checkout --lock "$TMP/checkou
 printf 'dirty\n' > "$checkout/untracked"
 expect fail dirty_checkout python3 "$CHECK" verify-checkout --lock "$TMP/checkout.lock" --checkout "$checkout"
 rm "$checkout/untracked"
-git -C "$checkout" remote set-url origin https://github.com/hopmesh/monorepo.git
+git -C "$checkout" remote set-url origin https://github.com/hopmesh/legacy.git
 expect fail wrong_remote python3 "$CHECK" verify-checkout --lock "$TMP/checkout.lock" --checkout "$checkout"
 git -C "$checkout" remote set-url origin https://github.com/hopmesh/platform.git
 rm "$checkout/tools/commercial-source-manifest.txt"

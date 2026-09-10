@@ -1,0 +1,204 @@
+name: Billing catalog and Resend (hop canonical)
+
+on:
+  pull_request:
+    paths:
+      - infra/private-source.lock
+      - .github/workflows/billing-catalog.yml
+      - tools/private-source-pin.py
+      - tools/secondary-deploy-authority-guard.py
+      - tools/secondary-deploy-authority-guard.test.sh
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Plan or apply the pinned private billing root
+        required: true
+        type: choice
+        options: [plan, apply]
+      confirm:
+        description: Type deploy billing from hop main
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: hop-billing-catalog
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Billing deployment authority validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate secondary deployment authority
+        run: |
+          python3 tools/secondary-deploy-authority-guard.py
+          bash tools/secondary-deploy-authority-guard.test.sh
+
+  catalog:
+    name: Apply private billing source from hop main
+    needs: validate
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.repository == 'hopmesh/hop' &&
+      github.ref == 'refs/heads/main' &&
+      inputs.confirm == 'deploy billing from hop main'
+    runs-on: ubuntu-latest
+    env:
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      BILLING_WIF_PROVIDER: ${{ vars.GCP_BILLING_WIF_PROVIDER }}
+      BILLING_SERVICE_ACCOUNT: ${{ vars.GCP_BILLING_SERVICE_ACCOUNT }}
+      OPERATION: ${{ inputs.operation }}
+    steps:
+      - name: Check out canonical hop main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          path: public
+          fetch-depth: 0
+          persist-credentials: false
+
+      - id: pin
+        name: Validate and read private source pin
+        working-directory: public
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$(git ls-remote origin refs/heads/main | cut -f1)"
+          python3 tools/private-source-pin.py verify-lock --lock infra/private-source.lock
+          echo "repository=$(python3 tools/private-source-pin.py get --lock infra/private-source.lock repository)" >> "$GITHUB_OUTPUT"
+          echo "commit=$(python3 tools/private-source-pin.py get --lock infra/private-source.lock commit)" >> "$GITHUB_OUTPUT"
+
+      - id: auth
+        name: Authenticate billing deployment identity
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+          workload_identity_provider: ${{ env.BILLING_WIF_PROVIDER }}
+          service_account: ${{ env.BILLING_SERVICE_ACCOUNT }}
+          token_format: access_token
+
+      - name: Require the private checkout token
+        env:
+          PRIVATE_SOURCE_TOKEN: ${{ secrets.HOP_SYNC_TOKEN }}
+        run: |
+          set -euo pipefail
+          for name in PROJECT_ID BILLING_WIF_PROVIDER BILLING_SERVICE_ACCOUNT PRIVATE_SOURCE_TOKEN; do
+            test -n "${!name}" || { echo "::error::$name is not configured"; exit 1; }
+          done
+          test "$OPERATION" = plan -o "$OPERATION" = apply
+
+      - name: Check out exact private billing source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.pin.outputs.repository }}
+          ref: ${{ steps.pin.outputs.commit }}
+          token: ${{ secrets.HOP_SYNC_TOKEN }}
+          path: private
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify exact private checkout
+        run: |
+          python3 public/tools/private-source-pin.py verify-checkout \
+            --lock public/infra/private-source.lock --checkout private
+
+      - name: Load vendor credentials from Secret Manager without logging
+        env:
+          ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+        run: |
+          set -euo pipefail
+          fetch_secret() {
+            local secret="$1" output="$2"
+            curl -fsS -H "Authorization: Bearer $ACCESS_TOKEN" \
+              "https://secretmanager.googleapis.com/v1/projects/${PROJECT_ID}/secrets/${secret}/versions/latest:access" \
+              -o "/tmp/${secret}.json"
+            python3 - "/tmp/${secret}.json" "$output" <<'PY'
+          import base64, json, os, sys
+          value = base64.b64decode(json.load(open(sys.argv[1], encoding="utf-8"))["payload"]["data"]).decode()
+          if not value:
+              raise SystemExit("secret payload is empty")
+          print(f"::add-mask::{value}")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as target:
+              target.write(f"{sys.argv[2]}={value}\n")
+          PY
+          }
+          fetch_secret stripe-api-key TF_VAR_stripe_api_key
+          fetch_secret hop-resend-apikey TF_VAR_resend_api_key
+
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: "1.12.3"
+          tofu_wrapper: false
+
+      - name: Create saved private billing plan
+        working-directory: private/infra/billing
+        run: |
+          set -euo pipefail
+          tofu init -input=false
+          tofu plan -input=false -no-color -out=tfplan
+          tofu show -json tfplan > /tmp/billing-plan.json
+
+      - name: Refuse billing deletion or replacement
+        run: |
+          python3 - /tmp/billing-plan.json <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1], encoding="utf-8"))
+          allowed = {(), ("no-op",), ("read",), ("create",), ("update",)}
+          bad = [(c.get("address"), tuple(c.get("change", {}).get("actions", [])))
+                 for c in data.get("resource_changes", [])
+                 if tuple(c.get("change", {}).get("actions", [])) not in allowed]
+          if bad:
+              raise SystemExit(f"billing plan contains forbidden actions: {bad}")
+          PY
+
+      - id: apply
+        name: Apply the saved private billing plan
+        if: env.OPERATION == 'apply'
+        working-directory: private/infra/billing
+        run: |
+          set -euo pipefail
+          tofu apply -input=false -auto-approve -no-color tfplan
+          tofu output -json price_ids > /tmp/price-ids-raw.json
+          echo "applied=true" >> "$GITHUB_OUTPUT"
+
+      # This remains in the same serialized job as apply. An older catalog run cannot publish last.
+      - name: Publish one validated billing price id version
+        if: steps.apply.outputs.applied == 'true'
+        env:
+          ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+        run: |
+          set -euo pipefail
+          python3 - /tmp/price-ids-raw.json /tmp/price-version-request.json <<'PY'
+          import base64, json, re, sys
+          raw = json.load(open(sys.argv[1], encoding="utf-8"))
+          value = raw.get("value", raw)
+          if set(value) != {"base", "reach", "observability"}:
+              raise SystemExit("price_ids output has unexpected keys")
+          if not all(isinstance(item, str) and re.fullmatch(r"price_[A-Za-z0-9]+", item) for item in value.values()):
+              raise SystemExit("price_ids output contains an invalid Stripe price id")
+          compact = json.dumps({key: value[key] for key in ("base", "reach", "observability")}, separators=(",", ":")).encode()
+          request = {"payload": {"data": base64.b64encode(compact).decode()}}
+          json.dump(request, open(sys.argv[2], "w", encoding="utf-8"), separators=(",", ":"))
+          PY
+          curl -fsS -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+            --data-binary @/tmp/price-version-request.json \
+            "https://secretmanager.googleapis.com/v1/projects/${PROJECT_ID}/secrets/hop-billing-price-ids:addVersion" \
+            -o /tmp/price-version-response.json
+          python3 - /tmp/price-version-response.json <<'PY'
+          import json, re, sys
+          name = json.load(open(sys.argv[1], encoding="utf-8")).get("name", "")
+          version = name.rsplit("/", 1)[-1]
+          if not re.fullmatch(r"[1-9][0-9]*", version):
+              raise SystemExit("Secret Manager did not return a numeric version")
+          print(f"published hop-billing-price-ids version {version}")
+          PY
+
+      - name: Report plan-only result
+        if: env.OPERATION == 'plan'
+        run: echo "Billing and Resend plan validated; no external state changed."

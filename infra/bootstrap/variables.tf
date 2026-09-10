@@ -32,6 +32,17 @@ variable "github_repository" {
   }
 }
 
+variable "github_authority_phase" {
+  description = "Closed deployment-authority state: hop, or handoff for an explicit rollback."
+  type        = string
+  default     = "hop"
+
+  validation {
+    condition     = contains(["handoff", "hop"], var.github_authority_phase)
+    error_message = "github_authority_phase must be handoff or hop."
+  }
+}
+
 variable "runtime_state_bucket" {
   description = "Versioned GCS bucket used by every Hop OpenTofu state root."
   type        = string

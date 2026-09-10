@@ -107,20 +107,41 @@ expect("bootstrap backend rejects extra credential", lambda r: replace(r, "infra
 expect("accountd omission rejected", lambda r: remove_resource(r, "infra/console.tf", "google_cloud_run_v2_service", "accountd"))
 
 
-def omit_accountd_and_manifest(repo):
-    remove_resource(repo, "infra/console.tf", "google_cloud_run_v2_service", "accountd")
-    replace(repo, "infra/runtime-resource-manifest.txt", "google_cloud_run_v2_service.accountd\n", "")
-expect("resource and manifest joint deletion rejected", omit_accountd_and_manifest)
+def rename_resource_and_manifest(repo):
+    replace(repo, "infra/mail_dns.tf", 'resource "google_dns_record_set" "dkim"', 'resource "google_dns_record_set" "dkim_renamed"')
+    replace(repo, "infra/runtime-resource-manifest.txt", "google_dns_record_set.dkim\n", "google_dns_record_set.dkim_renamed\n")
+expect("joint resource and manifest rename rejected by pinned digest", rename_resource_and_manifest)
+
+def rename_removed_and_manifest(repo):
+    replace(repo, "infra/removed_adminplane.tf", "from = google_cloudbuild_trigger.image", "from = google_cloudbuild_trigger.renamed")
+    replace(repo, "infra/runtime-removed-manifest.txt", "google_cloudbuild_trigger.image\n", "google_cloudbuild_trigger.renamed\n")
+expect("joint removed address and manifest rename rejected by pinned digest", rename_removed_and_manifest)
 
 expect("private source label required", lambda r: replace(r, "infra/example.tf", '"hop-private-source-sha" = var.private_source_sha', '"hop-private-source-sha" = "bad"'))
+
+def comment_spoof_deploy_roles(repo):
+    import re
+    path = repo / "infra/bootstrap/iam.tf"
+    text = path.read_text()
+    match = re.search(r"^\s*deploy_project_roles\s*=\s*toset\(\[(.*?)\]\)", text, re.MULTILINE | re.DOTALL)
+    if not match:
+        raise AssertionError("deploy role set not found")
+    safe = match.group(0)
+    commented = "\n".join("# " + line for line in safe.splitlines())
+    bad = safe.replace('"roles/bigquery.dataEditor"', '"roles/owner"', 1)
+    path.write_text(text.replace(safe, commented + "\n" + bad, 1))
+expect("commented safe roles cannot hide active owner grant", comment_spoof_deploy_roles)
 expect("singleton count zero rejected", lambda r: replace(r, "infra/example.tf", 'name     = "hop-example"', 'name     = "hop-example"\n  count    = 0'))
-expect("relay cardinality pinned", lambda r: replace(r, "infra/cloud_run.tf", "for_each = local.regions", "for_each = {}"))
+expect("provider condition must use closed phase map", lambda r: replace(r, "infra/bootstrap/billing.tf", "attribute_condition = local.github_repository_conditions[var.github_authority_phase]", 'attribute_condition = "assertion.repository == \\"hopmesh/hop\\""'))
+def provider_wildcard(repo):
+    replace(repo, "infra/bootstrap/billing.tf", 'hop     = "assertion.repository == \\\"${local.github_hop_repository}\\\""', 'hop     = "assertion.repository.startsWith(\\\"hopmesh/\\\")"')
+expect("provider wildcard rejected", provider_wildcard)
 expect("removed address cannot destroy", make_removed_destroy)
 expect("billing price version cannot be latest", lambda r: replace(r, "infra/console.tf", "version = var.billing_price_ids_version", 'version = "latest"'))
-expect("billing price secret id pinned", lambda r: replace(r, "infra/console.tf", 'secret  = "hop-billing-price-ids"', 'secret  = "stripe-webhook-secret"'))
+expect("billing price secret id pinned", lambda r: replace(r, "infra/console.tf", 'secret  = "hop-billing-price-ids"', 'secret  = "other-secret"'))
 expect("runtime data source omission rejected", lambda r: remove_data(r, "infra/console.tf", "google_secret_manager_secret_version", "billing_price_ids"))
-expect("provider condition hop only", lambda r: replace(r, "infra/bootstrap/billing.tf", 'attribute_condition = "assertion.repository == \\"hopmesh/hop\\""', 'attribute_condition = "assertion.repository == \\"hopmesh/platform\\""\n  # attribute_condition = "assertion.repository == \\"hopmesh/hop\\""'))
-expect("shared WIF member main ref", lambda r: replace(r, "infra/bootstrap/ci_apply.tf", "attribute.ref/refs/heads/main", "attribute.repository/hopmesh/hop"))
+expect("hop phase cannot admit platform", lambda r: replace(r, "infra/bootstrap/billing.tf", 'hop     = "assertion.repository == \\\"${local.github_hop_repository}\\\""', 'hop     = "assertion.repository == \\\"${local.github_platform_repository}\\\""'))
+expect("shared WIF member main ref", lambda r: replace(r, "infra/bootstrap/billing.tf", "attribute.ref/refs/heads/main", "attribute.repository/hopmesh/hop"))
 expect("github repository fixed", lambda r: replace(r, "infra/bootstrap/variables.tf", 'default     = "hopmesh/hop"', 'default     = "hopmesh/platform"'))
 expect("runtime state bucket fixed", lambda r: replace(r, "infra/bootstrap/variables.tf", 'default     = "hop-mesh-tfstate"', 'default     = "other-bucket"'))
 
@@ -190,6 +211,89 @@ expect("public infra symlink rejected", infra_symlink)
 def infra_binary(repo):
     (repo / "infra/binary.tf").write_bytes(b"\xff\xfe")
 expect("public infra binary rejected", infra_binary)
+
+
+def bootstrap_removed_destroy(repo):
+    path = repo / "infra/bootstrap/iam.tf"
+    text = path.read_text()
+    block = guard.repeated_blocks(text, "removed")[0]
+    bad = block.replace("destroy = false", "destroy = true", 1)
+    path.write_text(text.replace(block, bad, 1))
+expect("bootstrap removed address cannot destroy", bootstrap_removed_destroy)
+
+def secret_iam_binding(repo):
+    append(repo, "infra/bootstrap/billing.tf", '''
+resource "google_secret_manager_secret_iam_binding" "evil_price_manager" {
+  secret_id = google_secret_manager_secret.billing_price_ids.secret_id
+  role      = "roles/secretmanager.secretVersionManager"
+  members   = ["serviceAccount:${google_service_account.deploy.email}"]
+}
+''')
+expect("authoritative secret IAM binding rejected", secret_iam_binding)
+
+def extra_wif_binding(repo):
+    append(repo, "infra/bootstrap/billing.tf", '''
+resource "google_service_account_iam_member" "evil_pr_wif" {
+  service_account_id = google_service_account.deploy.name
+  role               = "roles/iam.workloadIdentityUser"
+  member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.ref/refs/pull/8/merge"
+}
+''')
+expect("additional WIF binding rejected", extra_wif_binding)
+
+expect("custom WIF JWKS rejected", lambda r: replace(r, "infra/bootstrap/billing.tf", 'display_name                       = "GitHub OIDC"', 'display_name                       = "GitHub OIDC"\n  jwks_json = "{}"'))
+expect("custom WIF audience rejected", lambda r: replace(r, "infra/bootstrap/billing.tf", 'display_name                       = "GitHub OIDC"', 'display_name                       = "GitHub OIDC"\n  allowed_audiences = ["evil"]'))
+expect("disabled WIF provider rejected", lambda r: replace(r, "infra/bootstrap/billing.tf", 'display_name                       = "GitHub OIDC"', 'display_name                       = "GitHub OIDC"\n  disabled = true'))
+expect("non-GitHub issuer rejected", lambda r: replace(r, "infra/bootstrap/billing.tf", 'issuer_uri        = "https://token.actions.githubusercontent.com"', 'issuer_uri        = "https://attacker.example"'))
+expect("WIF attribute mapping pinned", lambda r: replace(r, "infra/bootstrap/billing.tf", '"attribute.ref"        = "assertion.ref"', '"attribute.ref"        = "assertion.actor"'))
+
+def widen_deploy_state_with_comment(repo):
+    path = repo / "infra/bootstrap/iam.tf"
+    text = path.read_text()
+    block = guard.resource_block(text, "google_storage_bucket_iam_member", "deploy_state")
+    bad = block.replace('role   = "roles/storage.objectUser"', 'role   = "roles/storage.admin"')
+    old = 'expression  = "resource.name == \'projects/_/buckets/${var.runtime_state_bucket}\' || resource.name.startsWith(\'projects/_/buckets/${var.runtime_state_bucket}/objects/${var.runtime_state_prefix}/\')"'
+    bad = bad.replace(old, 'expression  = "resource.name.startsWith(\'projects/_/buckets/${var.runtime_state_bucket}\')"\n  # objects/${var.runtime_state_prefix}/')
+    path.write_text(text.replace(block, bad, 1))
+expect("deploy state role and prefix comment spoof rejected", widen_deploy_state_with_comment)
+
+def nested_label_spoof(repo):
+    path = repo / "infra/example.tf"
+    text = path.read_text()
+    block = guard.resource_block(text, "google_cloud_run_v2_service", "example")
+    labels = guard.top_level_block(block.split("template", 1)[0], "labels =")
+    bad = block.replace(labels, "", 1)
+    nested = '''ignore_changes = [scaling]
+    precondition {
+      condition = true
+      error_message = jsonencode({ labels = {
+        "hop-source-sha" = var.deployment_source_sha
+        "hop-private-source-sha" = var.private_source_sha
+      } })
+    }'''
+    bad = bad.replace("ignore_changes = [scaling]", nested, 1)
+    path.write_text(text.replace(block, bad, 1))
+expect("nested labels cannot spoof service provenance", nested_label_spoof)
+
+
+def runtime_backend_heredoc_spoof(repo):
+    path = repo / "infra/versions.tf"
+    text = path.read_text()
+    block = guard.balanced_block(text, 'backend "gcs"')
+    if not block:
+        raise AssertionError("runtime backend not found")
+    decoy = "locals {\n  backend_decoy = <<EOF\n" + block + "\nEOF\n}\n"
+    path.write_text(text.replace(block, decoy, 1))
+    append(repo, "infra/evil-backend.tf", '''
+terraform {
+  backend "gcs" {
+    bucket      = "attacker-bucket"
+    prefix      = "attacker-prefix"
+    credentials = "attacker"
+  }
+}
+''')
+expect("heredoc cannot spoof canonical runtime backend", runtime_backend_heredoc_spoof)
 
 print(f"infra authority guard tests passed: {passed}")
 PY
