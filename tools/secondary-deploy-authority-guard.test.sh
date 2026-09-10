@@ -111,6 +111,9 @@ phase_plan("observed terminal cutover plan accepted", "apply", [
     {"address": "google_service_account_iam_member.billing_catalog_wif_main", "change": {"actions": ["create", "delete"]}},
     {"address": "google_storage_bucket_iam_member.deploy_billing_state_reader[0]", "previous_address": "google_storage_bucket_iam_member.deploy_billing_state_reader", "change": {"actions": ["delete"]}},
 ], True)
+phase_plan("tainted planned cleanup retry accepted", "apply", [
+    {"address": "terraform_data.remove_legacy_iam_bindings", "change": {"actions": ["delete", "create"]}},
+], True)
 phase_plan("exact rollback authority plan accepted", "rollback", [
     {"address": "google_iam_workload_identity_pool_provider.github", "change": {"actions": ["update"]}},
     {"address": "google_service_account_iam_member.deploy_runtime_wif_platform_rollback[0]", "change": {"actions": ["create"]}},

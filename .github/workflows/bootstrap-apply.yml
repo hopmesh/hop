@@ -183,6 +183,9 @@ jobs:
               "google_service_account_iam_member.bootstrap_apply_wif",
               "google_service_account_iam_member.billing_catalog_wif_main",
           }
+          cleanup_replacements = {
+              "terraform_data.remove_legacy_iam_bindings",
+          }
           rollback_creates = {
               "google_service_account_iam_member.deploy_runtime_wif_platform_rollback[0]",
               "google_service_account_iam_member.bootstrap_apply_wif_platform_rollback[0]",
@@ -215,6 +218,8 @@ jobs:
               if actions in {("create",), ("update",)} and address in normal_mutable:
                   continue
               if actions == ("create", "delete") and address in normal_replacements:
+                  continue
+              if actions == ("delete", "create") and address in cleanup_replacements:
                   continue
               if actions == ("delete",) and address in normal_deletes:
                   continue

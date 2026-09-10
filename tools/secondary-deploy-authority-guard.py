@@ -284,11 +284,13 @@ def check_bootstrap(root: Path) -> list[str]:
             'previous == "google_storage_bucket_iam_member.deploy_billing_state_reader" and actions == ("delete",)',
             'normal_mutable = {',
             'normal_replacements = {',
+            'cleanup_replacements = {',
             'rollback_creates = {',
             'if operation == "rollback":',
             'address in rollback_creates and actions == ("create",)',
             'actions == ("delete",) and address in normal_deletes',
             'actions == ("create", "delete") and address in normal_replacements',
+            'actions == ("delete", "create") and address in cleanup_replacements',
             'actions == ("forget",) and address == "google_service_account.build"',
             'raise SystemExit(f"bootstrap plan contains unapproved actions: {bad}")',
         ):
@@ -322,6 +324,9 @@ def check_bootstrap(root: Path) -> list[str]:
                 "google_service_account_iam_member.deploy_runtime_wif",
                 "google_service_account_iam_member.bootstrap_apply_wif",
                 "google_service_account_iam_member.billing_catalog_wif_main",
+            },
+            "cleanup_replacements": {
+                "terraform_data.remove_legacy_iam_bindings",
             },
             "rollback_creates": {
                 "google_service_account_iam_member.deploy_runtime_wif_platform_rollback[0]",
