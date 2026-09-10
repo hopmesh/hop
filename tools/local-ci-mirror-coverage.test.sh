@@ -184,6 +184,27 @@ open(destination, "w", encoding="utf-8").write(text.replace(step, "true # python
 PY
 expect "ci.yml comment-only archive guard step" fail "$TMP/ci-comment-archive-guard.yml" "$ROOT/tools/local-ci-mirror.sh"
 
+python3 - "$ROOT/.github/workflows/ci.yml" "$TMP" <<'PY'
+import pathlib, sys
+source = pathlib.Path(sys.argv[1]).read_text()
+out = pathlib.Path(sys.argv[2])
+for name, step in (
+    ("archive-test", "bash tools/archive-readiness-guard.test.sh"),
+    ("archive-guard", "python3 tools/archive-readiness-guard.py"),
+):
+    needle = f"run: {step}"
+    if needle not in source:
+        raise SystemExit(f"step not found: {step}")
+    (out / f"ci-or-true-{name}.yml").write_text(source.replace(needle, f"run: {step} || true", 1))
+    (out / f"ci-continue-{name}.yml").write_text(source.replace(needle, f"continue-on-error: true\n        {needle}", 1))
+    (out / f"ci-if-false-{name}.yml").write_text(source.replace(needle, f"if: ${{{{ false }}}}\n        {needle}", 1))
+PY
+for name in archive-test archive-guard; do
+  expect "ci.yml $name cannot tolerate failure" fail "$TMP/ci-or-true-$name.yml" "$ROOT/tools/local-ci-mirror.sh"
+  expect "ci.yml $name cannot continue on error" fail "$TMP/ci-continue-$name.yml" "$ROOT/tools/local-ci-mirror.sh"
+  expect "ci.yml $name cannot be conditionally skipped" fail "$TMP/ci-if-false-$name.yml" "$ROOT/tools/local-ci-mirror.sh"
+done
+
 # 2. Local mirror step dropping, commenting, and no-op mutations
 python3 - "$ROOT/tools/local-ci-mirror.sh" "$TMP/mirror-no-archive-test.sh" <<'PY'
 import sys
