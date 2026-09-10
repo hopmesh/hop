@@ -244,6 +244,5 @@ assert step in text, "archive guard step not found in local-ci-mirror.sh"
 open(destination, "w", encoding="utf-8").write(text.replace(step, 'step "archive-readiness guard" true # python3 tools/archive-readiness-guard.py', 1))
 PY
 expect "local mirror no-op archive guard step" fail "$ROOT/.github/workflows/ci.yml" "$TMP/mirror-noop-archive-guard.sh"
-
 echo "local-ci-mirror-coverage.test: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

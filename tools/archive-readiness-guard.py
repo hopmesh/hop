@@ -208,7 +208,6 @@ def check_doc_predicate(rel_path, pattern_class, line_str):
     """Validate allowed line predicates in documentation files."""
     if pattern_class == "runbook_blocked_or_historical":
         return any(p.search(line_str) for p in RUNBOOK_PERMITTED_PATTERNS)
-
     if pattern_class == "audit_record":
         return any(
             x in line_str
@@ -332,6 +331,7 @@ def scan_file_for_violations(rel_path, text):
                 errors.append(
                     f"{rel_path}:{lno}: unallowlisted reference to archived repository hopmesh/monorepo"
                 )
+
 
     return errors
 
