@@ -94,6 +94,10 @@ resource "google_service_account_iam_member" "infra_drift_wif" {
   member             = local.github_workflow_members.drift
 
   depends_on = [google_iam_workload_identity_pool_provider.github]
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 resource "google_project_iam_custom_role" "infra_drift" {

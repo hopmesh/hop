@@ -207,12 +207,10 @@ jobs:
               "google_service_account_iam_member.deploy_runtime_wif",
               "google_service_account_iam_member.bootstrap_apply_wif",
               "google_service_account_iam_member.billing_catalog_wif_main",
+              "google_service_account_iam_member.infra_drift_wif",
           }
           cleanup_replacements = {
               "terraform_data.remove_legacy_iam_bindings",
-          }
-          rollback_resumable = normal_replacements | {
-              "google_service_account_iam_member.infra_drift_wif",
           }
           rollback_creates = {
               "google_service_account_iam_member.deploy_runtime_wif_platform_rollback[0]",
@@ -244,7 +242,7 @@ jobs:
                       continue
                   if address in cleanup_replacements and actions in cleanup_retry_actions:
                       continue
-                  if address in rollback_resumable and actions in {("create",), ("create", "delete")}:
+                  if address in normal_replacements and actions in {("create",), ("create", "delete")}:
                       continue
                   bad.append((address, actions))
                   continue

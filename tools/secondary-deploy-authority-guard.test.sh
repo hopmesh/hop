@@ -91,6 +91,31 @@ expect("bootstrap requires release environment", "bootstrap-apply.yml", "environ
 
 # Execute the embedded phase gate against the observed terminal plan shape and rollback boundaries.
 bootstrap_doc = guard.load(root / ".github/workflows/bootstrap-apply.yml")
+# Execute the credentialed preflight parser with supported and hostile permission catalogs.
+permission_run = guard.step_by_name(bootstrap_doc["jobs"]["bootstrap"], "Validate drift custom-role permissions")[1]["run"]
+permission_match = re.search(r"(?ms)<<'PY'\n(.*?)\n\s*PY", permission_run)
+assert permission_match, "drift permission preflight heredoc not found"
+permission_script = permission_match.group(1)
+role_source = (root / "infra/bootstrap/ci_apply.tf").read_text(encoding="utf-8")
+role_match = re.search(r'(?ms)resource "google_project_iam_custom_role" "infra_drift" \{(.*?)^\}', role_source)
+permission_block = re.search(r'(?ms)^\s*permissions\s*=\s*\[(.*?)^\s*\]', role_match.group(1))
+requested_permissions = sorted(set(re.findall(r'"([a-zA-Z0-9.]+)"', permission_block.group(1))))
+
+def permission_case(label, payload, accepted):
+    global passed
+    with tempfile.TemporaryDirectory() as directory:
+        fixture = pathlib.Path(directory) / "permissions.json"
+        fixture.write_text(json.dumps(payload))
+        result = subprocess.run([sys.executable, "-", str(fixture)], input=permission_script, text=True, capture_output=True, cwd=root)
+        assert (result.returncode == 0) == accepted, f"{label}: {result.stderr}"
+    passed += 1
+    print(f"ok   [{label}]")
+
+supported_catalog = [{"name": name} for name in requested_permissions]
+permission_case("all drift permissions supported", supported_catalog, True)
+permission_case("NOT_SUPPORTED drift permission rejected", [{**item, "customRolesSupportLevel": "NOT_SUPPORTED"} if item["name"] == requested_permissions[0] else item for item in supported_catalog], False)
+permission_case("missing drift permission rejected", supported_catalog[1:], False)
+permission_case("malformed permission catalog rejected", {"permissions": supported_catalog}, False)
 policy_run = guard.step_by_name(bootstrap_doc["jobs"]["bootstrap"], "Refuse unrelated bootstrap actions")[1]["run"]
 match = re.search(r"(?ms)<<'PY'\n(.*?)\n\s*PY", policy_run)
 assert match, "bootstrap plan policy heredoc not found"
@@ -127,6 +152,12 @@ phase_plan("create-before-delete cleanup retry accepted during rollback", "rollb
 phase_plan("rollback can resume exact Hop WIF bindings", "rollback", [
     {"address": "google_service_account_iam_member.bootstrap_apply_wif", "change": {"actions": ["create", "delete"]}},
     {"address": "google_service_account_iam_member.infra_drift_wif", "change": {"actions": ["create"]}},
+], True)
+phase_plan("drift WIF taint retry accepted", "apply", [
+    {"address": "google_service_account_iam_member.infra_drift_wif", "change": {"actions": ["create", "delete"]}},
+], True)
+phase_plan("drift WIF taint retry accepted during rollback", "rollback", [
+    {"address": "google_service_account_iam_member.infra_drift_wif", "change": {"actions": ["create", "delete"]}},
 ], True)
 phase_plan("exact rollback authority plan accepted", "rollback", [
     {"address": "google_iam_workload_identity_pool_provider.github", "change": {"actions": ["update"]}},

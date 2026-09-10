@@ -811,8 +811,7 @@ def check(root):
     for name, (service_account, member) in hop_bindings.items():
         block = resource_block(bootstrap, "google_service_account_iam_member", name) or ""
         lifecycle = top_level_block(block, "lifecycle") or ""
-        needs_replacement_safety = name != "infra_drift_wif"
-        if not has_exact_top_level_assignment(block, "service_account_id", service_account) or not has_exact_top_level_assignment(block, "role", '"roles/iam.workloadIdentityUser"') or not has_exact_top_level_assignment(block, "member", member) or not has_exact_top_level_assignment(block, "depends_on", "[google_iam_workload_identity_pool_provider.github]") or top_level_block(block, "condition") or (needs_replacement_safety and not has_exact_top_level_assignment(lifecycle, "create_before_destroy", "true")):
+        if not has_exact_top_level_assignment(block, "service_account_id", service_account) or not has_exact_top_level_assignment(block, "role", '"roles/iam.workloadIdentityUser"') or not has_exact_top_level_assignment(block, "member", member) or not has_exact_top_level_assignment(block, "depends_on", "[google_iam_workload_identity_pool_provider.github]") or top_level_block(block, "condition") or not has_exact_top_level_assignment(lifecycle, "create_before_destroy", "true"):
             errors.append(f"bootstrap workflow-scoped WIF binding drifted or risks lockout: {name}")
     for name, (service_account, member) in rollback_bindings.items():
         block = resource_block(bootstrap, "google_service_account_iam_member", name) or ""
