@@ -5,6 +5,11 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### Bug Fixes
+- require archive guards to remain gating (59ee5b9)
+- make the monorepo archive guard load-bearing (bfe60e0)
+- make the monorepo archive guard load-bearing (ec73706)
+- guard the monorepo archive boundary (dbec94d)
+- publish the pinned artifact and stop naming a repository that does not exist (b9e54dc)
 - keep the audit report inside its viewport (8ca6003)
 - name and fix what blocks the app uid LAN socket (98ff0d7)
 - make the hex package buildable (9825b0d)
@@ -343,6 +348,10 @@ git-cliff. Do not edit by hand.
 - Kotlin 2.4/AGP 9.2.1/Compose BOM 2026.06/okhttp 5.4 toolchain migration (#90) (4d2e3c4)
 
 ### Documentation
+- refine deploy attribution and commercial stack reconciliation plan (efbb987)
+- document repository authority and deploy reconciliation roadmap (baab023)
+- name the real preconditions for enabling the relay fleet (0a13006)
+- regenerate from conventional commits (de9d778)
 - regenerate from conventional commits (47a8bf6)
 - say BLE in the proof record (ec82185)
 - say BLE, and keep the subnet out of path syntax (b2c0640)
@@ -485,6 +494,8 @@ git-cliff. Do not edit by hand.
 - §27 provenance traces + learned routes + utility-prioritized epidemic (37a19b2)
 
 ### Other
+- physical bearer delivery with the iPhone as a participant (df1fb9d)
+- exercise durability against a real Firestore backend (eb37a56)
 - exercise the durability claims and gate the ones that were untested (6146a44)
 - exercise React Native physical bearers (dc6b439)
 - consume every publishable surface from a clean room and gate it (aaa8e7d)
@@ -630,6 +641,7 @@ git-cliff. Do not edit by hand.
 - enforce purpose/platform/package (collapse sdk/wrappers, apps/web -> apps/web/site) (#116) (48ec524)
 
 ### Testing
+- make firestore durability self-test strictly discriminating (8ff2653)
 - prove link teardown fires on delivered frames, lower the bound to 3, and record the quiet-link residual (CAND-PROTO-B) (0c51fac)
 - make the identity secret guard fixtures deterministic and pin the entropy threshold from below (PROC-008) (40cc16f)
 - prove the DCO gate exempts the maintainer login and still refuses an unsigned outside commit (BIZ-015) (1cf2fbf)
