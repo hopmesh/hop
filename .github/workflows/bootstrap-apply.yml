@@ -73,7 +73,6 @@ jobs:
       BOOTSTRAP_SERVICE_ACCOUNT: ${{ vars.GCP_BOOTSTRAP_SERVICE_ACCOUNT }}
       RUNTIME_SERVICE_ACCOUNT: ${{ vars.GCP_RUNTIME_SERVICE_ACCOUNT }}
       BILLING_SERVICE_ACCOUNT: ${{ vars.GCP_BILLING_SERVICE_ACCOUNT }}
-      BREAKGLASS_OWNER: ${{ vars.GCP_BREAKGLASS_OWNER }}
       RELAYS_ENABLED: ${{ vars.RELAYS_ENABLED }}
       RELAY_IDENTITY_VERSION: ${{ vars.RELAY_IDENTITY_VERSION }}
       EXAMPLE_IDENTITY_VERSION: ${{ vars.EXAMPLE_IDENTITY_VERSION }}
@@ -96,7 +95,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
           test "$EXPECTED_SHA" = "$(git ls-remote origin refs/heads/main | cut -f1)"
           for name in PROJECT_ID BOOTSTRAP_WIF_PROVIDER BOOTSTRAP_SERVICE_ACCOUNT \
-            RUNTIME_SERVICE_ACCOUNT BILLING_SERVICE_ACCOUNT BREAKGLASS_OWNER RELAYS_ENABLED RELAY_IDENTITY_VERSION \
+            RUNTIME_SERVICE_ACCOUNT BILLING_SERVICE_ACCOUNT RELAYS_ENABLED RELAY_IDENTITY_VERSION \
             EXAMPLE_IDENTITY_VERSION DEPLOYMENT_ENVIRONMENT CLOUD_RUN_INGRESS \
             MAX_INSTANCES_PER_REGION RELAY_REGION_ALLOWLIST; do
             test -n "${!name}" || { echo "::error::$name is not configured"; exit 1; }
@@ -278,12 +277,10 @@ jobs:
           done
           gcloud storage buckets get-iam-policy "gs://$PROJECT_ID-tfstate" \
             --format=json > "$RUNNER_TEMP/runtime-state-iam.json"
-          python3 - "$RUNNER_TEMP" "$OPERATION" "$PROJECT_ID" "$RUNTIME_SERVICE_ACCOUNT" "$BOOTSTRAP_SERVICE_ACCOUNT" "$BILLING_SERVICE_ACCOUNT" "$BREAKGLASS_OWNER" <<'PY'
-          import json, pathlib, re, sys
+          python3 - "$RUNNER_TEMP" "$OPERATION" "$PROJECT_ID" "$RUNTIME_SERVICE_ACCOUNT" "$BOOTSTRAP_SERVICE_ACCOUNT" "$BILLING_SERVICE_ACCOUNT" <<'PY'
+          import hashlib, json, pathlib, sys
           root = pathlib.Path(sys.argv[1])
-          operation, project, runtime_sa, bootstrap_sa, billing_sa, breakglass_owner = sys.argv[2:]
-          if not re.fullmatch(r"user:[^@\s]+@[^@\s]+", breakglass_owner):
-              raise SystemExit("project breakglass owner is invalid")
+          operation, project, runtime_sa, bootstrap_sa, billing_sa = sys.argv[2:]
           provider = json.load(open(root / "provider.json", encoding="utf-8"))
           final = 'assertion.repository == "hopmesh/hop"'
           rollback = 'assertion.repository == "hopmesh/platform" || assertion.repository == "hopmesh/hop"'
@@ -346,6 +343,16 @@ jobs:
               "billing": f"serviceAccount:{billing_sa}",
               "drift": f"serviceAccount:{drift_sa}",
           }
+          project_policy = json.load(open(root / "project-iam.json", encoding="utf-8"))
+          owner_members = [
+              member
+              for binding in project_policy.get("bindings", [])
+              if binding.get("role") == "roles/owner"
+              for member in binding.get("members", [])
+          ]
+          if len(owner_members) != 1 or hashlib.sha256(owner_members[0].encode()).hexdigest() != "8fb6f62c7c4027f2dd21d8a9f148074100d6a326e3eb9ced23309446d346f411":
+              raise SystemExit("project breakglass owner drifted")
+          breakglass_owner = owner_members[0]
           number = "149923095434"
           def service_account(email):
               return f"serviceAccount:{email}"
@@ -391,7 +398,6 @@ jobs:
               "roles/serviceusage.serviceUsageAdmin": {identities["bootstrap"]},
               "roles/serviceusage.serviceUsageConsumer": {identities["runtime"]},
           }
-          project_policy = json.load(open(root / "project-iam.json", encoding="utf-8"))
           project_roles_raw = json.load(open(root / "project-roles.json", encoding="utf-8"))
           if not isinstance(project_roles_raw, list):
               raise SystemExit("project custom role readback is malformed")

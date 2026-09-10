@@ -13,7 +13,7 @@ import yaml
 BILLING = ".github/workflows/billing-catalog.yml"
 DRIFT = ".github/workflows/infra-drift.yml"
 BOOTSTRAP = ".github/workflows/bootstrap-apply.yml"
-BOOTSTRAP_PROOF_SHA256 = "2a7f92e401affe606000b88c1ec23a353ff1ad611c75ad3f2dcfb7088d1c7474"
+BOOTSTRAP_PROOF_SHA256 = "cbda6b791e85ab8ee5ff31ffe7413daa111b3cd8bee94b02fc5e30326b4aad2e"
 
 
 def load(path: Path) -> dict:
@@ -359,6 +359,7 @@ def check_bootstrap(root: Path) -> list[str]:
             'raise SystemExit("project IAM binds an unresolved project custom role")': 1,
             "expected_sa_policies = {": 1,
             'raise SystemExit(f"{label} complete service-account IAM policy drifted")': 1,
+            'raise SystemExit("project breakglass owner drifted")': 1,
             "expected_project_policy = {": 1,
             'raise SystemExit("complete project IAM policy drifted")': 1,
             'raise SystemExit("retired Cloud Build deploy identity is not disabled")': 1,
