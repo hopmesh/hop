@@ -35,6 +35,43 @@ def sandbox():
     shutil.copy(root / "tools/workflow-secrets.json", work / "tools/workflow-secrets.json")
     return work
 
+# The App private key is usable only from the reviewed workflow set.
+work = sandbox()
+try:
+    for workflow in (root / ".github/workflows").glob("*.yml"):
+        shutil.copy(workflow, work / ".github/workflows" / workflow.name)
+    manifest_path = work / "tools/workflow-secrets.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["secrets"]["HOP_SYNC_APP_PRIVATE_KEY"]["workflows"].remove("billing-catalog.yml")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    try:
+        guard.check_static(work)
+    except guard.WorkflowSecretsError as error:
+        assert "workflow consumers drifted" in str(error)
+    else:
+        raise AssertionError("App private key consumer allowlist did not gate billing-catalog.yml")
+finally:
+    shutil.rmtree(work)
+
+# Write-capable changelog and automerge tokens must never expand to every App installation repository.
+for target_name in ("changelog.yml", "pr-automerge.yml"):
+    work = sandbox()
+    try:
+        for workflow in (root / ".github/workflows").glob("*.yml"):
+            shutil.copy(workflow, work / ".github/workflows" / workflow.name)
+        target = work / ".github/workflows" / target_name
+        text = target.read_text(encoding="utf-8")
+        assert text.count("          repositories: hop\n") == 1
+        target.write_text(text.replace("          repositories: hop\n", "", 1), encoding="utf-8")
+        try:
+            guard.check_static(work)
+        except guard.WorkflowSecretsError as error:
+            assert "App token repository or permission scope drifted" in str(error)
+        else:
+            raise AssertionError(f"{target_name} App token expanded to every installation repository")
+    finally:
+        shutil.rmtree(work)
+
 
 def rejects(label, workflow_text, manifest_edit, fragment):
     work = sandbox()
@@ -42,6 +79,8 @@ def rejects(label, workflow_text, manifest_edit, fragment):
         (work / ".github/workflows/example.yml").write_text(workflow_text, encoding="utf-8")
         manifest = json.loads((work / "tools/workflow-secrets.json").read_text())
         manifest["secrets"] = manifest_edit(manifest["secrets"])
+        for entry in manifest["secrets"].values():
+            entry.pop("workflows", None)
         (work / "tools/workflow-secrets.json").write_text(json.dumps(manifest), encoding="utf-8")
         try:
             guard.check_static(work)
@@ -259,24 +298,13 @@ def presence(label, environ, scopes, expect_error):
     assert not expect_error, f"{label}: guard accepted it"
 
 
-# Only the names this repository actually declares in the organization/repository scope. BOOTSTRAP_TFVARS,
-# STRIPE_API_KEY and RESEND_API_KEY were here until the deploy and billing workflows moved to
-# hopmesh/platform. Leaving them would have made the unmapped-name case below vacuous: the guard only
-# demands names the manifest declares, so a fixture keyed to an undeclared name is accepted and the
-# assertion tests nothing.
+# Only the two repository-scoped audit credentials remain in this scope. The broad organization PAT
+# is retired; workflow tokens now come from the protected component-sync App credentials.
 live = {
     "BRANCH_PROTECTION_TOKEN": "false",
     "MIRROR_SECRET_AUDIT_TOKEN": "false",
-    "HOP_SYNC_TOKEN": "true",
 }
-presence("the live inventory as it stands", live, ["organization", "repository"], None)
-# Deleting a provisioned secret must be a non-green run, not a quiet skip.
-presence(
-    "deleted HOP_SYNC_TOKEN",
-    {**live, "HOP_SYNC_TOKEN": "false"},
-    ["organization", "repository"],
-    "HOP_SYNC_TOKEN is declared provisioned in organization but is NOT set there",
-)
+presence("repository and organization inventory", live, ["organization", "repository"], None)
 # A provisioned:false to-do that has since been satisfied must force the manifest to be updated.
 presence(
     "provisioned:false name that is now set",
@@ -290,22 +318,31 @@ presence(
     ["organization", "repository"],
     "clear provisioned:false",
 )
-# A name the workflow forgot to pass is UNKNOWN, never assumed present. Keyed to a name the manifest
-# really declares, so removing it genuinely leaves the guard with an unanswered question.
+
+component = {
+    "HOP_SYNC_APP_ID": "true",
+    "HOP_SYNC_APP_PRIVATE_KEY": "true",
+}
+presence("component-sync inventory", component, ["environment:component-sync"], None)
 presence(
-    "unmapped name",
-    {name: value for name, value in live.items() if name != "HOP_SYNC_TOKEN"},
-    ["organization", "repository"],
-    "HOP_SYNC_TOKEN was not passed",
+    "deleted App private key",
+    {**component, "HOP_SYNC_APP_PRIVATE_KEY": "false"},
+    ["environment:component-sync"],
+    "HOP_SYNC_APP_PRIVATE_KEY is declared provisioned in environment:component-sync but is NOT set there",
 )
-# And a secret value must never be what gets passed: only the boolean form is accepted. Keyed to a
-# DECLARED name for the same reason as the case above; an undeclared name is simply ignored, so the
-# old STRIPE_API_KEY fixture would have asserted nothing once that secret moved to hopmesh/platform.
+# A name the workflow forgot to pass is UNKNOWN, never assumed present.
 presence(
-    "a value instead of a boolean",
-    {**live, "HOP_SYNC_TOKEN": "ghp_notarealtoken"},
-    ["organization", "repository"],
-    "HOP_SYNC_TOKEN was not passed",
+    "unmapped App id",
+    {name: value for name, value in component.items() if name != "HOP_SYNC_APP_ID"},
+    ["environment:component-sync"],
+    "HOP_SYNC_APP_ID was not passed",
+)
+# A secret value must never be passed here: only the boolean form is accepted.
+presence(
+    "an App id value instead of a boolean",
+    {**component, "HOP_SYNC_APP_ID": "123456"},
+    ["environment:component-sync"],
+    "HOP_SYNC_APP_ID was not passed",
 )
 
 # Verify canonical repository constant.

@@ -117,6 +117,26 @@ open(destination, "w", encoding="utf-8").write(replaced)
 PY
 expect "full job missing a ci.yml cargo pass" fail "$ROOT/.github/workflows/ci.yml" "$TMP/mirror-noclippy.sh"
 
+# Every command behind the infrastructure `full` claim must be load-bearing.
+python3 - "$ROOT/tools/local-ci-mirror.sh" "$TMP" <<'PY'
+import pathlib, sys
+source = pathlib.Path(sys.argv[1]).read_text()
+out = pathlib.Path(sys.argv[2])
+cases = {
+    "runtime-guard": 'step "runtime deploy guard"              python3 tools/runtime-deploy-guard.py\n',
+    "secondary-guard": 'step "secondary deploy guard"            python3 tools/secondary-deploy-authority-guard.py\n',
+    "tofu-runtime-validate": 'step "tofu validate runtime"          tofu -chdir=infra validate\n',
+    "private-pin-live": 'step "private source pin"                python3 tools/private-source-pin.py verify-lock --lock infra/private-source.lock\n',
+}
+for name, command in cases.items():
+    if source.count(command) != 1:
+        raise SystemExit(f"mirror command not found exactly once: {name}")
+    (out / f"mirror-no-{name}.sh").write_text(source.replace(command, "", 1))
+PY
+for name in runtime-guard secondary-guard tofu-runtime-validate private-pin-live; do
+  expect "full infrastructure job missing $name" fail "$ROOT/.github/workflows/ci.yml" "$TMP/mirror-no-$name.sh"
+done
+
 # The two tree-damage hazards this script had. A fixed /tmp path is a cross-worktree clobber (it
 # misattributed a failure during the 2026-07-29 audit), and the tracked 178MB Frameworks tree the Apple
 # build rewrites must be handled on exit, not left for a stray `git add` to commit.

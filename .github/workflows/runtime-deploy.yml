@@ -1,0 +1,442 @@
+name: Runtime deploy (hop canonical)
+
+on:
+  pull_request:
+    paths:
+      - infra/**
+      - .github/workflows/runtime-deploy.yml
+      - tools/infra-authority-guard.py
+      - tools/infra-authority-guard.test.sh
+      - tools/private-source-pin.py
+      - tools/private-source-pin.test.sh
+      - tools/runtime-deploy-guard.py
+      - tools/runtime-deploy-guard.test.sh
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Plan or apply the current hop main commit
+        required: true
+        type: choice
+        options: [plan, apply]
+      confirm:
+        description: Type deploy hopmesh/hop main
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: hop-runtime-deploy
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Runtime deployment authority validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: "1.12.3"
+          tofu_wrapper: false
+
+      - name: Validate canonical runtime workflow
+        run: python3 tools/runtime-deploy-guard.py
+
+      - name: Self-test canonical runtime workflow guard
+        run: bash tools/runtime-deploy-guard.test.sh
+
+      - name: Validate immutable private source pin
+        run: |
+          python3 tools/private-source-pin.py verify-lock --lock infra/private-source.lock
+          bash tools/private-source-pin.test.sh
+
+      - name: Validate infrastructure authority
+        run: |
+          python3 tools/infra-authority-guard.py
+          bash tools/infra-authority-guard.test.sh
+
+      - name: Validate OpenTofu roots without cloud credentials
+        run: |
+          tofu -chdir=infra fmt -check -recursive
+          tofu -chdir=infra init -backend=false -input=false
+          tofu -chdir=infra validate
+          tofu -chdir=infra/bootstrap init -backend=false -input=false
+          tofu -chdir=infra/bootstrap validate
+
+  deploy:
+    name: Deploy runtime from canonical hop main
+    needs: validate
+    if: >-
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.path == '.github/workflows/ci.yml' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.head_repository.full_name == 'hopmesh/hop') ||
+      (github.event_name == 'workflow_dispatch' &&
+       github.repository == 'hopmesh/hop' &&
+       github.ref == 'refs/heads/main' &&
+       inputs.confirm == 'deploy hopmesh/hop main')
+    runs-on: ubuntu-latest
+    environment: component-sync
+    env:
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      AR_REGION: us-central1
+      DEPLOY_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+      DEPLOY_OPERATION: ${{ github.event_name == 'workflow_run' && 'apply' || inputs.operation }}
+      UPSTREAM_EVENT: ${{ github.event.workflow_run.event }}
+      UPSTREAM_BRANCH: ${{ github.event.workflow_run.head_branch }}
+      UPSTREAM_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+      UPSTREAM_WORKFLOW_PATH: ${{ github.event.workflow_run.path }}
+      RUNTIME_WIF_PROVIDER: ${{ vars.GCP_RUNTIME_WIF_PROVIDER }}
+      RUNTIME_SERVICE_ACCOUNT: ${{ vars.GCP_RUNTIME_SERVICE_ACCOUNT }}
+      RELAYS_ENABLED: ${{ vars.RELAYS_ENABLED }}
+      RELAY_IDENTITY_VERSION: ${{ vars.RELAY_IDENTITY_VERSION }}
+      EXAMPLE_IDENTITY_VERSION: ${{ vars.EXAMPLE_IDENTITY_VERSION }}
+      DEPLOYMENT_ENVIRONMENT: ${{ vars.DEPLOYMENT_ENVIRONMENT }}
+      CLOUD_RUN_INGRESS: ${{ vars.CLOUD_RUN_INGRESS }}
+      MAX_INSTANCES_PER_REGION: ${{ vars.MAX_INSTANCES_PER_REGION }}
+      RELAY_REGION_ALLOWLIST: ${{ vars.RELAY_REGION_ALLOWLIST }}
+    steps:
+      - name: Prove trusted event and required configuration
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REPOSITORY: ${{ github.repository }}
+          REF_NAME: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          test "$REPOSITORY" = hopmesh/hop
+          test "$REF_NAME" = refs/heads/main
+          test "$DEPLOY_SHA" != ""
+          test "$DEPLOY_OPERATION" = plan -o "$DEPLOY_OPERATION" = apply
+          for name in PROJECT_ID RUNTIME_WIF_PROVIDER RUNTIME_SERVICE_ACCOUNT \
+            RELAYS_ENABLED RELAY_IDENTITY_VERSION EXAMPLE_IDENTITY_VERSION DEPLOYMENT_ENVIRONMENT \
+            CLOUD_RUN_INGRESS MAX_INSTANCES_PER_REGION RELAY_REGION_ALLOWLIST; do
+            test -n "${!name}" || { echo "::error::$name is not configured"; exit 1; }
+          done
+          if [ "$EVENT_NAME" = workflow_run ]; then
+            test "$UPSTREAM_EVENT" = push
+            test "$UPSTREAM_BRANCH" = main
+            test "$UPSTREAM_REPOSITORY" = hopmesh/hop
+            test "$UPSTREAM_WORKFLOW_PATH" = .github/workflows/ci.yml
+          fi
+
+      - name: Check out the exact green hop commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.DEPLOY_SHA }}
+          path: public
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify exact canonical source
+        working-directory: public
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$DEPLOY_SHA"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          tip="$(git ls-remote origin refs/heads/main | cut -f1)"
+          test "$tip" = "$DEPLOY_SHA" || { echo "::error::deploy superseded by $tip"; exit 1; }
+          python3 tools/private-source-pin.py verify-lock --lock infra/private-source.lock
+
+      - id: pin
+        name: Read the immutable private source lock
+        working-directory: public
+        run: |
+          set -euo pipefail
+          echo "repository=$(python3 tools/private-source-pin.py get --lock infra/private-source.lock repository)" >> "$GITHUB_OUTPUT"
+          echo "commit=$(python3 tools/private-source-pin.py get --lock infra/private-source.lock commit)" >> "$GITHUB_OUTPUT"
+
+      - id: auth
+        name: Authenticate the hop runtime deployer
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+          workload_identity_provider: ${{ env.RUNTIME_WIF_PROVIDER }}
+          service_account: ${{ env.RUNTIME_SERVICE_ACCOUNT }}
+          token_format: access_token
+
+      - name: Authenticate Docker to Artifact Registry
+        env:
+          ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+        run: |
+          set -euo pipefail
+          test -n "$ACCESS_TOKEN"
+          printf '%s' "$ACCESS_TOKEN" | docker login -u oauth2accesstoken --password-stdin "https://${AR_REGION}-docker.pkg.dev"
+
+      # Public images are built before private source enters either checkout or Docker context.
+      - id: public_images
+        name: Build and push public relay and example images first
+        working-directory: public
+        run: |
+          set -euo pipefail
+          registry="${AR_REGION}-docker.pkg.dev/${PROJECT_ID}/hop"
+          build_push() {
+            local image="$1" dockerfile="$2" log="$3"
+            local tagged="${registry}/${image}:${DEPLOY_SHA}"
+            docker build --no-cache --pull -f "$dockerfile" -t "$tagged" .
+            docker push "$tagged" | tee "$log"
+            local digest
+            digest="$(python3 - "$log" <<'PY'
+          import re, sys
+          text = open(sys.argv[1], encoding="utf-8").read()
+          found = re.findall(r"digest:\s*(sha256:[0-9a-f]{64})", text)
+          if len(found) != 1:
+              raise SystemExit(f"expected one pushed digest, got {found}")
+          print(found[0])
+          PY
+            )"
+            printf '%s@%s' "${registry}/${image}" "$digest"
+          }
+          relay="$(build_push hop-relayd services/hop-relayd/Dockerfile /tmp/relay-push.log)"
+          example="$(build_push hop-example services/hop-endpoint/Dockerfile /tmp/example-push.log)"
+          echo "relay=$relay" >> "$GITHUB_OUTPUT"
+          echo "example=$example" >> "$GITHUB_OUTPUT"
+
+      - id: private-source-token
+        name: Create read-only private source token after public builds
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.HOP_SYNC_APP_ID }}
+          private-key: ${{ secrets.HOP_SYNC_APP_PRIVATE_KEY }}
+          owner: hopmesh
+          repositories: platform
+          permission-contents: read
+
+      - name: Check out pinned private source after public builds
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.pin.outputs.repository }}
+          ref: ${{ steps.pin.outputs.commit }}
+          token: ${{ steps.private-source-token.outputs.token }}
+          path: private
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify and stage pinned commercial source
+        run: |
+          set -euo pipefail
+          python3 public/tools/private-source-pin.py verify-checkout \
+            --lock public/infra/private-source.lock --checkout private \
+            >"$RUNNER_TEMP/private-checkout.log" 2>&1 || {
+              echo "::error::private source checkout verification failed; detailed output withheld"
+              exit 1
+            }
+          python3 private/tools/stage-commercial-source.py \
+            --platform-root private --dest public \
+            --pin "${{ steps.pin.outputs.commit }}" --dest-pin "$DEPLOY_SHA" \
+            >"$RUNNER_TEMP/private-stage.log" 2>&1 || {
+              echo "::error::private source staging failed; detailed output withheld"
+              exit 1
+            }
+          python3 private/tools/stage-commercial-source.py \
+            --platform-root private --dest public \
+            --pin "${{ steps.pin.outputs.commit }}" --dest-pin "$DEPLOY_SHA" --check \
+            >"$RUNNER_TEMP/private-stage-check.log" 2>&1 || {
+              echo "::error::staged private source verification failed; detailed output withheld"
+              exit 1
+            }
+
+      - id: private_images
+        name: Build and push pinned account and console images
+        working-directory: public
+        run: |
+          set -euo pipefail
+          registry="${AR_REGION}-docker.pkg.dev/${PROJECT_ID}/hop"
+          build_push() {
+            local image="$1" dockerfile="$2" log="$3"
+            local tagged="${registry}/${image}:${DEPLOY_SHA}"
+            docker build --no-cache --pull -f "$dockerfile" -t "$tagged" . >"${log%.log}-build.log" 2>&1 || {
+              echo "::error::private commercial image build failed; detailed output withheld"
+              exit 1
+            }
+            docker push "$tagged" >"$log" 2>&1 || {
+              echo "::error::private commercial image push failed; detailed output withheld"
+              exit 1
+            }
+            local digest
+            digest="$(python3 - "$log" <<'PY'
+          import re, sys
+          text = open(sys.argv[1], encoding="utf-8").read()
+          found = re.findall(r"digest:\s*(sha256:[0-9a-f]{64})", text)
+          if len(found) != 1:
+              raise SystemExit(f"expected one pushed digest, got {found}")
+          print(found[0])
+          PY
+            )"
+            printf '%s@%s' "${registry}/${image}" "$digest"
+          }
+          accountd="$(build_push hop-accountd services/hop-accountd/Dockerfile /tmp/accountd-push.log)"
+          console="$(build_push hop-console apps/web/console/Dockerfile /tmp/console-push.log)"
+          echo "accountd=$accountd" >> "$GITHUB_OUTPUT"
+          echo "console=$console" >> "$GITHUB_OUTPUT"
+
+      - id: price_version
+        name: Resolve the highest enabled billing price id version
+        run: |
+          set -euo pipefail
+          gcloud secrets versions list hop-billing-price-ids --project "$PROJECT_ID" \
+            --filter='state=ENABLED' --format=json \
+            > /tmp/price-versions.json 2>"$RUNNER_TEMP/price-version-list.log" || {
+              echo "::error::enabled billing price versions could not be listed"
+              exit 1
+            }
+          version="$(python3 - /tmp/price-versions.json <<'PY'
+          import json, re, sys
+          data = json.load(open(sys.argv[1], encoding="utf-8"))
+          if not isinstance(data, list):
+              raise SystemExit("gcloud price version output is not a JSON array")
+          versions = []
+          for item in data:
+              if not isinstance(item, dict):
+                  raise SystemExit("gcloud price version entry is not an object")
+              value = item.get("name", "").rsplit("/", 1)[-1]
+              if not re.fullmatch(r"[1-9][0-9]*", value):
+                  raise SystemExit(f"non-numeric enabled secret version: {value!r}")
+              versions.append(int(value))
+          if not versions:
+              raise SystemExit("hop-billing-price-ids has no enabled numeric version")
+          print(max(versions))
+          PY
+          )"
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Assemble immutable OpenTofu inputs
+        working-directory: public
+        env:
+          RELAY_IMAGE: ${{ steps.public_images.outputs.relay }}
+          EXAMPLE_IMAGE: ${{ steps.public_images.outputs.example }}
+          ACCOUNTD_IMAGE: ${{ steps.private_images.outputs.accountd }}
+          CONSOLE_IMAGE: ${{ steps.private_images.outputs.console }}
+          PRIVATE_SOURCE_SHA: ${{ steps.pin.outputs.commit }}
+          BILLING_PRICE_IDS_VERSION: ${{ steps.price_version.outputs.value }}
+        run: |
+          set -euo pipefail
+          for name in RELAY_IMAGE EXAMPLE_IMAGE ACCOUNTD_IMAGE CONSOLE_IMAGE; do
+            value="${!name}"
+            [[ "$value" =~ @sha256:[0-9a-f]{64}$ ]] || { echo "::error::$name is not an immutable digest"; exit 1; }
+          done
+          {
+            echo "TF_VAR_project_id=$PROJECT_ID"
+            echo "TF_VAR_relay_image=$RELAY_IMAGE"
+            echo "TF_VAR_example_image=$EXAMPLE_IMAGE"
+            echo "TF_VAR_accountd_image=$ACCOUNTD_IMAGE"
+            echo "TF_VAR_console_image=$CONSOLE_IMAGE"
+            echo "TF_VAR_deployment_source_sha=$DEPLOY_SHA"
+            echo "TF_VAR_private_source_sha=$PRIVATE_SOURCE_SHA"
+            echo "TF_VAR_billing_price_ids_version=$BILLING_PRICE_IDS_VERSION"
+            echo "TF_VAR_deployment_environment=$DEPLOYMENT_ENVIRONMENT"
+            echo "TF_VAR_relay_identity_version=$RELAY_IDENTITY_VERSION"
+            echo "TF_VAR_example_identity_version=$EXAMPLE_IDENTITY_VERSION"
+            echo "TF_VAR_relays_enabled=$RELAYS_ENABLED"
+            echo "TF_VAR_cloud_run_ingress=$CLOUD_RUN_INGRESS"
+            echo "TF_VAR_max_instances_per_region=$MAX_INSTANCES_PER_REGION"
+            echo "TF_VAR_region_allowlist=$RELAY_REGION_ALLOWLIST"
+          } >> "$GITHUB_ENV"
+
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: "1.12.3"
+          tofu_wrapper: false
+
+      - name: Create saved runtime plan
+        working-directory: public/infra
+        run: |
+          set -euo pipefail
+          tofu init -input=false
+          tofu plan -input=false -no-color -out=tfplan
+          tofu show -json tfplan > /tmp/runtime-plan.json
+
+      - name: Refuse runtime deletion or replacement
+        run: |
+          python3 - /tmp/runtime-plan.json <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1], encoding="utf-8"))
+          allowed = {(), ("no-op",), ("read",), ("create",), ("update",)}
+          bad = []
+          for change in data.get("resource_changes", []):
+              actions = tuple(change.get("change", {}).get("actions", []))
+              if actions not in allowed:
+                  bad.append((change.get("address"), actions))
+          if bad:
+              raise SystemExit(f"runtime plan contains forbidden actions: {bad}")
+          PY
+
+      - name: Refuse a superseded apply
+        if: env.DEPLOY_OPERATION == 'apply'
+        working-directory: public
+        run: |
+          set -euo pipefail
+          tip="$(git ls-remote origin refs/heads/main | cut -f1)"
+          test "$tip" = "$DEPLOY_SHA" || { echo "::error::deploy superseded by $tip"; exit 1; }
+
+      - id: apply
+        name: Apply the saved runtime plan
+        if: env.DEPLOY_OPERATION == 'apply'
+        working-directory: public/infra
+        run: |
+          set -euo pipefail
+          tofu apply -input=false -auto-approve -no-color tfplan
+          echo "applied=true" >> "$GITHUB_OUTPUT"
+
+      - name: Report plan-only result
+        if: env.DEPLOY_OPERATION == 'plan'
+        run: echo "Plan validated; no resource was changed."
+
+      - name: Prove every live runtime came from these commits
+        if: steps.apply.outputs.applied == 'true'
+        env:
+          ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          PRIVATE_SOURCE_SHA: ${{ steps.pin.outputs.commit }}
+        run: |
+          set -euo pipefail
+          python3 - "$DEPLOY_SHA" "$PRIVATE_SOURCE_SHA" "$RELAYS_ENABLED" "$PROJECT_ID" <<'PY'
+          import json, os, sys, urllib.request
+          hop_sha, private_sha, relays_enabled, project = sys.argv[1:]
+          token = os.environ.get("ACCESS_TOKEN", "")
+          if not token:
+              raise SystemExit("runtime readback access token is empty")
+          request = urllib.request.Request(
+              f"https://run.googleapis.com/v2/projects/{project}/locations/-/services",
+              headers={"Authorization": f"Bearer {token}"},
+          )
+          try:
+              with urllib.request.urlopen(request) as response:
+                  data = json.load(response)
+          except Exception:
+              raise SystemExit("live runtime services could not be read back") from None
+          if not isinstance(data, dict) or not isinstance(data.get("services", []), list):
+              raise SystemExit("live runtime service response is malformed")
+          services = {item["name"].rsplit("/", 1)[-1]: item for item in data.get("services", [])}
+          required = {"hop-example", "hop-accountd", "hop-console"}
+          missing = sorted(required - services.keys())
+          if missing:
+              raise SystemExit(f"missing runtime services: {missing}")
+          if relays_enabled == "true" and not any(name.startswith("hop-relay-") for name in services):
+              raise SystemExit("relay fleet enabled but no regional relay service is live")
+          for name, item in services.items():
+              if name not in required and not name.startswith("hop-relay-"):
+                  continue
+              labels = item.get("labels", {})
+              if labels.get("hop-source-sha") != hop_sha:
+                  raise SystemExit(f"{name} carries wrong hop-source-sha")
+              if labels.get("hop-private-source-sha") != private_sha:
+                  raise SystemExit(f"{name} carries wrong hop-private-source-sha")
+          print(f"verified {len(services)} live services at hop={hop_sha[:8]} private={private_sha[:8]}")
+          PY
+
+      - name: Probe public runtime entry points
+        if: steps.apply.outputs.applied == 'true'
+        run: |
+          set -euo pipefail
+          curl -fsS --retry 3 https://example.hopme.sh/.well-known/hop >/dev/null
+          curl -fsS --retry 3 https://dashboard.hopme.sh/ >/dev/null

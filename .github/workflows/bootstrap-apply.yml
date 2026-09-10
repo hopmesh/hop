@@ -1,0 +1,525 @@
+name: Bootstrap authority (hop canonical)
+
+on:
+  pull_request:
+    paths:
+      - infra/bootstrap/**
+      - .github/workflows/bootstrap-apply.yml
+      - tools/infra-authority-guard.py
+      - tools/infra-authority-guard.test.sh
+      - tools/secondary-deploy-authority-guard.py
+      - tools/secondary-deploy-authority-guard.test.sh
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Plan, apply hop-only authority, or roll back to platform plus hop
+        required: true
+        type: choice
+        options: [plan, apply, rollback]
+      confirm:
+        description: Type bootstrap hopmesh/hop main, or rollback hop authority to platform
+        required: true
+        type: string
+      ancestor_review:
+        description: Confirm owner review found no inherited non-owner auth or secret grants
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: hop-bootstrap-authority
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Bootstrap deployment authority validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: "1.12.3"
+          tofu_wrapper: false
+      - name: Validate bootstrap source and authority guards
+        run: |
+          tofu -chdir=infra/bootstrap fmt -check -recursive
+          tofu -chdir=infra/bootstrap init -backend=false -input=false
+          tofu -chdir=infra/bootstrap validate
+          python3 tools/infra-authority-guard.py
+          bash tools/infra-authority-guard.test.sh
+          python3 tools/secondary-deploy-authority-guard.py
+          bash tools/secondary-deploy-authority-guard.test.sh
+
+  bootstrap:
+    name: Plan or apply canonical hop authority
+    needs: validate
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.repository == 'hopmesh/hop' &&
+      github.ref == 'refs/heads/main' &&
+      inputs.ancestor_review == 'owner verified no inherited non-owner auth or secret grants' &&
+      ((inputs.operation != 'rollback' && inputs.confirm == 'bootstrap hopmesh/hop main') ||
+       (inputs.operation == 'rollback' && inputs.confirm == 'rollback hop authority to platform'))
+    runs-on: ubuntu-latest
+    environment: release
+    env:
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      BOOTSTRAP_WIF_PROVIDER: ${{ vars.GCP_BOOTSTRAP_WIF_PROVIDER }}
+      BOOTSTRAP_SERVICE_ACCOUNT: ${{ vars.GCP_BOOTSTRAP_SERVICE_ACCOUNT }}
+      RUNTIME_SERVICE_ACCOUNT: ${{ vars.GCP_RUNTIME_SERVICE_ACCOUNT }}
+      BILLING_SERVICE_ACCOUNT: ${{ vars.GCP_BILLING_SERVICE_ACCOUNT }}
+      RELAYS_ENABLED: ${{ vars.RELAYS_ENABLED }}
+      RELAY_IDENTITY_VERSION: ${{ vars.RELAY_IDENTITY_VERSION }}
+      EXAMPLE_IDENTITY_VERSION: ${{ vars.EXAMPLE_IDENTITY_VERSION }}
+      DEPLOYMENT_ENVIRONMENT: ${{ vars.DEPLOYMENT_ENVIRONMENT }}
+      CLOUD_RUN_INGRESS: ${{ vars.CLOUD_RUN_INGRESS }}
+      MAX_INSTANCES_PER_REGION: ${{ vars.MAX_INSTANCES_PER_REGION }}
+      RELAY_REGION_ALLOWLIST: ${{ vars.RELAY_REGION_ALLOWLIST }}
+      OPERATION: ${{ inputs.operation }}
+      EXPECTED_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require canonical main and every non-secret input
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test "$EXPECTED_SHA" = "$(git ls-remote origin refs/heads/main | cut -f1)"
+          for name in PROJECT_ID BOOTSTRAP_WIF_PROVIDER BOOTSTRAP_SERVICE_ACCOUNT \
+            RUNTIME_SERVICE_ACCOUNT BILLING_SERVICE_ACCOUNT RELAYS_ENABLED RELAY_IDENTITY_VERSION \
+            EXAMPLE_IDENTITY_VERSION DEPLOYMENT_ENVIRONMENT CLOUD_RUN_INGRESS \
+            MAX_INSTANCES_PER_REGION RELAY_REGION_ALLOWLIST; do
+            test -n "${!name}" || { echo "::error::$name is not configured"; exit 1; }
+          done
+          test "$OPERATION" = plan -o "$OPERATION" = apply -o "$OPERATION" = rollback
+
+      - name: Authenticate bootstrap authority
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+          workload_identity_provider: ${{ env.BOOTSTRAP_WIF_PROVIDER }}
+          service_account: ${{ env.BOOTSTRAP_SERVICE_ACCOUNT }}
+
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: "1.12.3"
+          tofu_wrapper: false
+
+      - name: Materialize reviewed non-secret bootstrap inputs
+        working-directory: infra/bootstrap
+        run: |
+          set -euo pipefail
+          phase=hop
+          if [ "$OPERATION" = rollback ]; then phase=handoff; fi
+          cat > ci.auto.tfvars <<EOF
+          github_repository        = "hopmesh/hop"
+          github_authority_phase   = "$phase"
+          runtime_state_bucket     = "hop-mesh-tfstate"
+          runtime_state_prefix     = "relay-fleet"
+          relay_identity_version   = "$RELAY_IDENTITY_VERSION"
+          example_identity_version = "$EXAMPLE_IDENTITY_VERSION"
+          deployment_environment   = "$DEPLOYMENT_ENVIRONMENT"
+          relays_enabled           = $RELAYS_ENABLED
+          cloud_run_ingress        = "$CLOUD_RUN_INGRESS"
+          max_instances_per_region = $MAX_INSTANCES_PER_REGION
+          region_allowlist         = $RELAY_REGION_ALLOWLIST
+          relay_domain             = "relay.hopme.sh"
+          EOF
+          chmod 600 ci.auto.tfvars
+
+      - name: Prove WIF authentication before state access
+        run: |
+          gcloud auth print-access-token >/dev/null 2>/tmp/auth-error || {
+            echo "::error::bootstrap WIF authentication failed"
+            cat /tmp/auth-error
+            exit 1
+          }
+
+      - name: Create and inspect one saved bootstrap plan
+        working-directory: infra/bootstrap
+        run: |
+          set -euo pipefail
+          tofu init -input=false
+          tofu plan -input=false -no-color -out=tfplan
+          tofu show -json tfplan > "$RUNNER_TEMP/bootstrap-plan.json"
+
+      - name: Refuse unrelated bootstrap actions
+        run: |
+          python3 - "$RUNNER_TEMP/bootstrap-plan.json" "$OPERATION" <<'PY'
+          import json, sys
+          plan = json.load(open(sys.argv[1], encoding="utf-8"))
+          operation = sys.argv[2]
+          normal_mutable = {
+              "google_iam_workload_identity_pool_provider.github",
+              "google_service_account_iam_member.deploy_runtime_wif",
+              "google_service_account_iam_member.bootstrap_apply_wif",
+              "google_service_account_iam_member.billing_catalog_wif_main",
+              "google_service_account.infra_drift",
+              "google_project_iam_custom_role.infra_drift",
+              "terraform_data.remove_legacy_iam_bindings",
+              "google_service_account_iam_member.infra_drift_wif",
+              "google_project_iam_member.infra_drift_viewer",
+              "google_storage_bucket_iam_member.infra_drift_state_reader",
+              "google_secret_manager_secret_iam_member.infra_drift_price_ids_accessor",
+              "google_secret_manager_secret_iam_member.infra_drift_price_ids_viewer",
+              "google_secret_manager_secret.billing_price_ids",
+              "google_secret_manager_secret_iam_member.billing_catalog_price_ids_writer",
+              "google_secret_manager_secret_iam_member.billing_catalog_stripe_api_key_reader",
+              "google_secret_manager_secret_iam_member.billing_catalog_resend_api_key_reader",
+              "google_secret_manager_secret_iam_member.deploy_billing_price_ids_accessor",
+              "google_secret_manager_secret_iam_member.deploy_billing_price_ids_viewer",
+          }
+          normal_replacements = {
+              "google_service_account_iam_member.deploy_runtime_wif",
+              "google_service_account_iam_member.bootstrap_apply_wif",
+              "google_service_account_iam_member.billing_catalog_wif_main",
+          }
+          cleanup_replacements = {
+              "terraform_data.remove_legacy_iam_bindings",
+          }
+          rollback_creates = {
+              "google_service_account_iam_member.deploy_runtime_wif_platform_rollback[0]",
+              "google_service_account_iam_member.bootstrap_apply_wif_platform_rollback[0]",
+              "google_service_account_iam_member.billing_catalog_wif_platform_rollback[0]",
+              "google_storage_bucket_iam_member.deploy_billing_state_reader[0]",
+          }
+          normal_deletes = rollback_creates | {
+              "google_storage_bucket_iam_member.deploy_billing_state_reader",
+          }
+          unchanged = {(), ("no-op",), ("read",)}
+          bad = []
+          for item in plan.get("resource_changes", []):
+              address = item.get("address")
+              actions = tuple(item.get("change", {}).get("actions", []))
+              previous = item.get("previous_address")
+              if previous is not None:
+                  if operation != "rollback" and address == "google_storage_bucket_iam_member.deploy_billing_state_reader[0]" and previous == "google_storage_bucket_iam_member.deploy_billing_state_reader" and actions == ("delete",):
+                      continue
+                  bad.append((address, "moved", previous))
+                  continue
+              if actions in unchanged:
+                  continue
+              if operation == "rollback":
+                  if address == "google_iam_workload_identity_pool_provider.github" and actions == ("update",):
+                      continue
+                  if address in rollback_creates and actions == ("create",):
+                      continue
+                  if address in cleanup_replacements and actions == ("delete", "create"):
+                      continue
+                  bad.append((address, actions))
+                  continue
+              if actions in {("create",), ("update",)} and address in normal_mutable:
+                  continue
+              if actions == ("create", "delete") and address in normal_replacements:
+                  continue
+              if actions == ("delete", "create") and address in cleanup_replacements:
+                  continue
+              if actions == ("delete",) and address in normal_deletes:
+                  continue
+              if actions == ("forget",) and address == "google_service_account.build":
+                  continue
+              bad.append((address, actions))
+          if bad:
+              raise SystemExit(f"bootstrap plan contains unapproved actions: {bad}")
+          PY
+
+      - name: Refuse a superseded bootstrap apply
+        if: env.OPERATION == 'apply' || env.OPERATION == 'rollback'
+        run: |
+          set -euo pipefail
+          tip="$(git ls-remote origin refs/heads/main | cut -f1)"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test "$tip" = "$EXPECTED_SHA" || { echo "::error::bootstrap apply superseded by $tip"; exit 1; }
+
+      - id: apply
+        name: Apply the saved bootstrap plan
+        if: env.OPERATION == 'apply' || env.OPERATION == 'rollback'
+        working-directory: infra/bootstrap
+        run: |
+          set -euo pipefail
+          tofu apply -input=false -auto-approve -no-color tfplan
+          echo "applied=true" >> "$GITHUB_OUTPUT"
+
+
+      - name: Prove final or rollback authority state
+        if: steps.apply.outputs.applied == 'true'
+        run: |
+          set -euo pipefail
+          gcloud iam workload-identity-pools providers describe github \
+            --project "$PROJECT_ID" --location global --workload-identity-pool github-actions \
+            --format=json > "$RUNNER_TEMP/provider.json"
+          for item in \
+            "$RUNTIME_SERVICE_ACCOUNT:runtime" \
+            "$BOOTSTRAP_SERVICE_ACCOUNT:bootstrap" \
+            "$BILLING_SERVICE_ACCOUNT:billing" \
+            "hop-infra-drift@$PROJECT_ID.iam.gserviceaccount.com:drift" \
+            "hop-relay@$PROJECT_ID.iam.gserviceaccount.com:relay" \
+            "hop-example@$PROJECT_ID.iam.gserviceaccount.com:example" \
+            "hop-accountd@$PROJECT_ID.iam.gserviceaccount.com:accountd" \
+            "hop-console@$PROJECT_ID.iam.gserviceaccount.com:console"; do
+            account="${item%%:*}"; label="${item##*:}"
+            gcloud iam service-accounts get-iam-policy "$account" --format=json > "$RUNNER_TEMP/${label}-iam.json"
+          done
+          gcloud projects get-iam-policy "$PROJECT_ID" --format=json > "$RUNNER_TEMP/project-iam.json"
+          gcloud iam roles list --project "$PROJECT_ID" --format=json > "$RUNNER_TEMP/project-roles.json"
+          gcloud iam service-accounts list --project "$PROJECT_ID" \
+            --filter="email=hop-cloudbuild@$PROJECT_ID.iam.gserviceaccount.com" \
+            --format=json > "$RUNNER_TEMP/retired-cloudbuild-sa.json"
+          for item in \
+            "hop-billing-price-ids:price" \
+            "stripe-api-key:stripe" \
+            "hop-resend-apikey:resend"; do
+            secret="${item%%:*}"; label="${item##*:}"
+            gcloud secrets get-iam-policy "$secret" --project "$PROJECT_ID" \
+              --format=json > "$RUNNER_TEMP/${label}-secret-iam.json"
+          done
+          gcloud storage buckets get-iam-policy "gs://$PROJECT_ID-tfstate" \
+            --format=json > "$RUNNER_TEMP/runtime-state-iam.json"
+          python3 - "$RUNNER_TEMP" "$OPERATION" "$PROJECT_ID" "$RUNTIME_SERVICE_ACCOUNT" "$BOOTSTRAP_SERVICE_ACCOUNT" "$BILLING_SERVICE_ACCOUNT" <<'PY'
+          import hashlib, json, pathlib, sys
+          root = pathlib.Path(sys.argv[1])
+          operation, project, runtime_sa, bootstrap_sa, billing_sa = sys.argv[2:]
+          provider = json.load(open(root / "provider.json", encoding="utf-8"))
+          final = 'assertion.repository == "hopmesh/hop"'
+          rollback = 'assertion.repository == "hopmesh/platform" || assertion.repository == "hopmesh/hop"'
+          expected_condition = rollback if operation == "rollback" else final
+          if provider.get("attributeCondition") != expected_condition or provider.get("state") != "ACTIVE":
+              raise SystemExit("live WIF provider condition/state does not match the requested authority phase")
+          mapping = {
+              "google.subject": "assertion.sub",
+              "attribute.repository": "assertion.repository",
+              "attribute.ref": "assertion.ref",
+              "attribute.workflow": "assertion.workflow_ref",
+          }
+          if provider.get("attributeMapping") != mapping:
+              raise SystemExit("live WIF provider attribute mapping drifted")
+          oidc = provider.get("oidc", {})
+          if oidc.get("issuerUri") != "https://token.actions.githubusercontent.com" or "jwksJson" in oidc or oidc.get("allowedAudiences") not in (None, []):
+              raise SystemExit("live WIF provider OIDC verification settings drifted")
+          pool = "principalSet://iam.googleapis.com/projects/149923095434/locations/global/workloadIdentityPools/github-actions/attribute.workflow"
+          def workflow(repo, name):
+              return f"{pool}/{repo}/.github/workflows/{name}@refs/heads/main"
+          expected_members = {
+              "runtime": {workflow("hopmesh/hop", "runtime-deploy.yml")},
+              "bootstrap": {workflow("hopmesh/hop", "bootstrap-apply.yml")},
+              "billing": {workflow("hopmesh/hop", "billing-catalog.yml")},
+              "drift": {workflow("hopmesh/hop", "infra-drift.yml")},
+              "relay": set(),
+              "example": set(),
+              "accountd": set(),
+              "console": set(),
+          }
+          if operation == "rollback":
+              expected_members["runtime"].add(workflow("hopmesh/platform", "runtime-deploy.yml"))
+              expected_members["bootstrap"].add(workflow("hopmesh/platform", "handoff-deploy-authority.yml"))
+              expected_members["billing"].add(workflow("hopmesh/platform", "billing-catalog.yml"))
+          policies = {
+              label: json.load(open(root / f"{label}-iam.json", encoding="utf-8"))
+              for label in expected_members
+          }
+          deploy_member = f"serviceAccount:{runtime_sa}"
+          expected_sa_policies = {
+              label: {("roles/iam.workloadIdentityUser", member) for member in members}
+              for label, members in expected_members.items()
+          }
+          for label in ("relay", "example", "accountd", "console"):
+              expected_sa_policies[label] = {("roles/iam.serviceAccountUser", deploy_member)}
+          for label, expected in expected_sa_policies.items():
+              policy = policies[label]
+              found = []
+              for binding in policy.get("bindings", []):
+                  if binding.get("condition") not in (None, {}):
+                      raise SystemExit(f"{label} service-account IAM grant has a condition")
+                  for member in binding.get("members", []):
+                      found.append((binding.get("role"), member))
+              if set(found) != expected or len(found) != len(expected):
+                  raise SystemExit(f"{label} complete service-account IAM policy drifted")
+          drift_sa = f"hop-infra-drift@{project}.iam.gserviceaccount.com"
+          identities = {
+              "runtime": f"serviceAccount:{runtime_sa}",
+              "bootstrap": f"serviceAccount:{bootstrap_sa}",
+              "billing": f"serviceAccount:{billing_sa}",
+              "drift": f"serviceAccount:{drift_sa}",
+          }
+          project_policy = json.load(open(root / "project-iam.json", encoding="utf-8"))
+          owner_members = [
+              member
+              for binding in project_policy.get("bindings", [])
+              if binding.get("role") == "roles/owner"
+              for member in binding.get("members", [])
+          ]
+          if len(owner_members) != 1 or hashlib.sha256(owner_members[0].encode()).hexdigest() != "8fb6f62c7c4027f2dd21d8a9f148074100d6a326e3eb9ced23309446d346f411":
+              raise SystemExit("project breakglass owner drifted")
+          breakglass_owner = owner_members[0]
+          number = "149923095434"
+          def service_account(email):
+              return f"serviceAccount:{email}"
+          def hop_service(name):
+              return service_account(f"{name}@{project}.iam.gserviceaccount.com")
+          expected_project_policy = {
+              f"projects/{project}/roles/hopBootstrapApplySecrets": {identities["bootstrap"]},
+              f"projects/{project}/roles/hopInfraDriftViewer": {identities["drift"]},
+              f"projects/{project}/roles/hopRuntimeDeployRegions": {identities["runtime"]},
+              f"projects/{project}/roles/hopRuntimeDeployRunIam": {identities["runtime"]},
+              "roles/artifactregistry.admin": {identities["bootstrap"]},
+              "roles/artifactregistry.serviceAgent": {service_account(f"service-{number}@gcp-sa-artifactregistry.iam.gserviceaccount.com")},
+              "roles/bigquery.dataEditor": {hop_service("hop-billingd"), identities["runtime"]},
+              "roles/certificatemanager.editor": {identities["runtime"]},
+              "roles/cloudbuild.serviceAgent": {service_account(f"service-{number}@gcp-sa-cloudbuild.iam.gserviceaccount.com")},
+              "roles/cloudsql.admin": {identities["bootstrap"]},
+              "roles/cloudsql.client": {hop_service("hop-accountd")},
+              "roles/compute.instanceGroupManagerServiceAgent": {service_account(f"{number}@cloudservices.gserviceaccount.com")},
+              "roles/compute.loadBalancerAdmin": {identities["runtime"]},
+              "roles/compute.serviceAgent": {service_account(f"service-{number}@compute-system.iam.gserviceaccount.com")},
+              "roles/containeranalysis.ServiceAgent": {service_account(f"service-{number}@container-analysis.iam.gserviceaccount.com")},
+              "roles/containerregistry.ServiceAgent": {service_account(f"service-{number}@containerregistry.iam.gserviceaccount.com")},
+              "roles/datastore.owner": {identities["bootstrap"]},
+              "roles/datastore.user": {hop_service("hop-accountd"), hop_service("hop-relay")},
+              "roles/datastore.viewer": {hop_service("hop-billingd")},
+              "roles/dns.admin": {identities["runtime"]},
+              "roles/firebaserules.system": {service_account(f"service-{number}@firebase-rules.iam.gserviceaccount.com")},
+              "roles/firestore.serviceAgent": {service_account(f"service-{number}@gcp-sa-firestore.iam.gserviceaccount.com")},
+              "roles/iam.roleAdmin": {identities["bootstrap"]},
+              "roles/iam.serviceAccountAdmin": {identities["bootstrap"]},
+              "roles/iam.workloadIdentityPoolAdmin": {identities["bootstrap"]},
+              "roles/logging.configWriter": {identities["runtime"]},
+              "roles/logging.logWriter": {
+                  hop_service("hop-accountd"), hop_service("hop-billingd"), hop_service("hop-console"),
+                  identities["runtime"], hop_service("hop-example"), hop_service("hop-relay"),
+              },
+              "roles/monitoring.editor": {identities["runtime"]},
+              "roles/owner": {breakglass_owner},
+              "roles/pubsub.serviceAgent": {service_account(f"service-{number}@gcp-sa-pubsub.iam.gserviceaccount.com")},
+              "roles/resourcemanager.projectIamAdmin": {identities["bootstrap"]},
+              "roles/run.developer": {identities["runtime"]},
+              "roles/run.serviceAgent": {service_account(f"service-{number}@serverless-robot-prod.iam.gserviceaccount.com")},
+              "roles/serviceusage.serviceUsageAdmin": {identities["bootstrap"]},
+              "roles/serviceusage.serviceUsageConsumer": {identities["runtime"]},
+          }
+          project_roles_raw = json.load(open(root / "project-roles.json", encoding="utf-8"))
+          if not isinstance(project_roles_raw, list):
+              raise SystemExit("project custom role readback is malformed")
+          custom_roles = {
+              item.get("name"): set(item.get("includedPermissions", []))
+              for item in project_roles_raw if isinstance(item, dict) and item.get("name")
+          }
+          secret_data_permissions = {
+              "secretmanager.versions.access", "secretmanager.versions.add",
+              "secretmanager.versions.destroy", "secretmanager.versions.disable",
+              "secretmanager.versions.enable",
+          }
+          found_project_policy = {}
+          for binding in project_policy.get("bindings", []):
+              role = binding.get("role")
+              members = binding.get("members", [])
+              if not isinstance(role, str) or not isinstance(members, list):
+                  raise SystemExit("project IAM binding is malformed")
+              if binding.get("condition") not in (None, {}):
+                  raise SystemExit("project IAM contains a conditioned binding")
+              if any(member.startswith(("principal://", "principalSet://")) for member in members):
+                  raise SystemExit("project IAM contains a federated principal")
+              if role.startswith("organizations/"):
+                  raise SystemExit("project IAM binds an organization-defined custom role")
+              if role.startswith(f"projects/{project}/roles/") and role not in custom_roles:
+                  raise SystemExit("project IAM binds an unresolved project custom role")
+              if role in custom_roles and custom_roles[role] & secret_data_permissions:
+                  raise SystemExit("project IAM grants a custom role with secret version data access")
+              if role in found_project_policy:
+                  raise SystemExit("project IAM repeats a role binding")
+              if len(members) != len(set(members)):
+                  raise SystemExit("project IAM repeats a role member")
+              found_project_policy[role] = set(members)
+          if found_project_policy != expected_project_policy:
+              raise SystemExit("complete project IAM policy drifted")
+          retired_accounts = json.load(open(root / "retired-cloudbuild-sa.json", encoding="utf-8"))
+          if not isinstance(retired_accounts, list) or len(retired_accounts) > 1 or (retired_accounts and retired_accounts[0].get("disabled") is not True):
+              raise SystemExit("retired Cloud Build deploy identity is not disabled")
+          expected_secrets = {
+              "price": {
+                  ("roles/secretmanager.secretVersionAdder", f"serviceAccount:{billing_sa}"),
+                  ("roles/secretmanager.secretAccessor", f"serviceAccount:{runtime_sa}"),
+                  ("roles/secretmanager.viewer", f"serviceAccount:{runtime_sa}"),
+                  ("roles/secretmanager.secretAccessor", f"serviceAccount:{drift_sa}"),
+                  ("roles/secretmanager.viewer", f"serviceAccount:{drift_sa}"),
+              },
+              "stripe": {
+                  ("roles/secretmanager.secretAccessor", f"serviceAccount:hop-billingd@{project}.iam.gserviceaccount.com"),
+                  ("roles/secretmanager.secretAccessor", f"serviceAccount:{billing_sa}"),
+              },
+              "resend": {
+                  ("roles/secretmanager.secretAccessor", f"serviceAccount:hop-accountd@{project}.iam.gserviceaccount.com"),
+                  ("roles/secretmanager.secretAccessor", f"serviceAccount:{billing_sa}"),
+              },
+          }
+          for label, expected in expected_secrets.items():
+              policy = json.load(open(root / f"{label}-secret-iam.json", encoding="utf-8"))
+              found = []
+              for binding in policy.get("bindings", []):
+                  if binding.get("condition") not in (None, {}):
+                      raise SystemExit(f"{label} secret IAM grant has a condition")
+                  for member in binding.get("members", []):
+                      found.append((binding.get("role"), member))
+              if set(found) != expected or len(found) != len(expected):
+                  raise SystemExit(f"{label} secret IAM grants drifted")
+          bucket = json.load(open(root / "runtime-state-iam.json", encoding="utf-8"))
+          expected_bucket_policy = {
+              (f"projects/{project}/roles/hopBootstrapApplyStateBucketIam", identities["bootstrap"], None, None, None),
+              ("roles/storage.legacyBucketOwner", f"projectEditor:{project}", None, None, None),
+              ("roles/storage.legacyBucketOwner", f"projectOwner:{project}", None, None, None),
+              ("roles/storage.legacyBucketReader", f"projectViewer:{project}", None, None, None),
+              ("roles/storage.legacyObjectOwner", f"projectEditor:{project}", None, None, None),
+              ("roles/storage.legacyObjectOwner", f"projectOwner:{project}", None, None, None),
+              ("roles/storage.legacyObjectReader", f"projectViewer:{project}", None, None, None),
+              (
+                  "roles/storage.objectUser", identities["runtime"], "runtime-state-only",
+                  "The deployer can list the backend bucket and mutate only runtime state objects.",
+                  f"resource.name == 'projects/_/buckets/{project}-tfstate' || resource.name.startsWith('projects/_/buckets/{project}-tfstate/objects/relay-fleet/')",
+              ),
+              (
+                  "roles/storage.objectAdmin", identities["bootstrap"], "bootstrap-state-prefix-only",
+                  "Only the backend bucket listing and objects under the bootstrap/ state prefix.",
+                  f'resource.name == "projects/_/buckets/{project}-tfstate" || resource.name.startsWith("projects/_/buckets/{project}-tfstate/objects/bootstrap/")',
+              ),
+              (
+                  "roles/storage.objectAdmin", identities["billing"], "billing-state-prefix-only",
+                  "Only objects under the billing/ state prefix.",
+                  f'resource.name == "projects/_/buckets/{project}-tfstate" || resource.name.startsWith("projects/_/buckets/{project}-tfstate/objects/billing/")',
+              ),
+              (
+                  "roles/storage.objectViewer", identities["drift"], "runtime-drift-state-read-only",
+                  "The drift identity may list the backend and read only runtime state objects.",
+                  f'resource.name == "projects/_/buckets/{project}-tfstate" || resource.name.startsWith("projects/_/buckets/{project}-tfstate/objects/relay-fleet/")',
+              ),
+          }
+          if operation == "rollback":
+              expected_bucket_policy.add((
+                  "roles/storage.objectViewer", identities["runtime"], "billing-state-read-only",
+                  "The deployer may read (never write) the isolated billing state for price ids.",
+                  f'resource.name.startsWith("projects/_/buckets/{project}-tfstate/objects/billing/")',
+              ))
+          found_bucket_policy = []
+          for binding in bucket.get("bindings", []):
+              role = binding.get("role")
+              members = binding.get("members", [])
+              condition = binding.get("condition") or {}
+              if not isinstance(role, str) or not isinstance(members, list) or not isinstance(condition, dict):
+                  raise SystemExit("state bucket IAM binding is malformed")
+              for member in members:
+                  found_bucket_policy.append((role, member, condition.get("title"), condition.get("description"), condition.get("expression")))
+          if set(found_bucket_policy) != expected_bucket_policy or len(found_bucket_policy) != len(expected_bucket_policy):
+              raise SystemExit("complete state bucket IAM policy drifted")
+          print(f"verified live authority phase {operation}")
+          PY
+
+      - name: Report plan-only result
+        if: env.OPERATION == 'plan'
+        run: echo "Bootstrap plan validated; no authority changed."

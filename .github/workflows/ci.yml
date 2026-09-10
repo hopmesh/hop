@@ -18,13 +18,12 @@ name: CI
 #                   (core-ffi-08), and the pure-C smoke.c end-to-end (core-ffi-01/04). cbindgen is
 #                   pinned so an upstream release can't churn the gate.
 #
-# The monorepo's infra job (tofu fmt/validate/plan) is gone from this repo: the infra tree moved
-# to hopmesh/platform, which carries its own copy of that gate.
+# The infrastructure job validates the public runtime and bootstrap roots, the immutable private
+# source pin, and every deploy-authority guard without cloud credentials.
 #
-# DEPLOY GATE (infra-01 / quality-net-09): GitHub is change management. Branch protection on `main`
-# requires the aggregate `CI gate`, so path-filtered jobs may skip without leaving a required context
-# pending. The runtime deploy that used to fire on this workflow's success moved to hopmesh/platform
-# with the infra tree; nothing in this repo deploys.
+# DEPLOY GATE: branch protection requires the aggregate `CI gate`. A green CI run on a push to
+# canonical hop main is the only automatic runtime deployment trigger; pull-request runs cannot
+# authenticate, read private source, or deploy.
 
 on:
   push:
@@ -74,6 +73,7 @@ jobs:
       web: ${{ steps.f.outputs.web }}
       contract: ${{ steps.f.outputs.contract }}
       docs: ${{ steps.f.outputs.docs }}
+      infra: ${{ steps.f.outputs.infra }}
       sdk_node: ${{ steps.f.outputs.sdk_node }}
       sdk_python: ${{ steps.f.outputs.sdk_python }}
       sdk_go: ${{ steps.f.outputs.sdk_go }}
@@ -170,6 +170,22 @@ jobs:
               - 'apps/**'
               - 'examples/**'
               - 'assets/**'
+              - 'infra/**'
+            infra:
+              - 'infra/**'
+              - '.github/workflows/runtime-deploy.yml'
+              - '.github/workflows/bootstrap-apply.yml'
+              - '.github/workflows/infra-drift.yml'
+              - '.github/workflows/billing-catalog.yml'
+              - '.github/workflows/resend-domain.yml'
+              - 'tools/infra-authority-guard.py'
+              - 'tools/infra-authority-guard.test.sh'
+              - 'tools/private-source-pin.py'
+              - 'tools/private-source-pin.test.sh'
+              - 'tools/runtime-deploy-guard.py'
+              - 'tools/runtime-deploy-guard.test.sh'
+              - 'tools/secondary-deploy-authority-guard.py'
+              - 'tools/secondary-deploy-authority-guard.test.sh'
             automation:
               - 'testkit/**'
             sdk_node:
@@ -1784,6 +1800,47 @@ jobs:
         working-directory: apps/react-native/HopDemo/android
         run: |
           ./gradlew :hop-mesh_react-native:compileDebugKotlin --no-daemon --stacktrace
+
+  infrastructure:
+    name: Infrastructure validation
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.full == 'true' || needs.changes.outputs.infra == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: "1.12.3"
+          tofu_wrapper: false
+
+      - name: Enforce infrastructure and private-source authority
+        run: |
+          python3 tools/infra-authority-guard.py
+          bash tools/infra-authority-guard.test.sh
+          python3 tools/private-source-pin.py verify-lock --lock infra/private-source.lock
+          bash tools/private-source-pin.test.sh
+
+      - name: Enforce runtime deploy authority
+        run: |
+          python3 tools/runtime-deploy-guard.py
+          bash tools/runtime-deploy-guard.test.sh
+
+      - name: Enforce bootstrap, drift, and billing deploy authority
+        run: |
+          python3 tools/secondary-deploy-authority-guard.py
+          bash tools/secondary-deploy-authority-guard.test.sh
+
+      - name: Validate OpenTofu without cloud credentials
+        run: |
+          tofu -chdir=infra fmt -check -recursive
+          tofu -chdir=infra init -backend=false -input=false
+          tofu -chdir=infra validate
+          tofu -chdir=infra/bootstrap init -backend=false -input=false
+          tofu -chdir=infra/bootstrap validate
   gate:
     name: CI gate
     runs-on: ubuntu-latest
@@ -1809,6 +1866,7 @@ jobs:
       - flutter-sdk
       - lowest-supported-bounds
       - react-native-sdk
+      - infrastructure
       - changes
     steps:
       - name: Results

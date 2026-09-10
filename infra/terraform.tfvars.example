@@ -1,0 +1,25 @@
+# Local break-glass apply inputs. Normal deployments receive these values from the runtime-deploy
+# GitHub Actions workflow (.github/workflows/runtime-deploy.yml), which builds and pushes the images,
+# resolves their @sha256 digests, and passes them as TF_VARs while applying via WIF as hop-deploy.
+
+project_id = "hop-mesh"
+
+# Digest references are mandatory; tags, including full-SHA tags, are rejected here. The workflow
+# resolves these from the images it just pushed.
+relay_image    = "us-central1-docker.pkg.dev/hop-mesh/hop/hop-relayd@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+example_image  = "us-central1-docker.pkg.dev/hop-mesh/hop/hop-example@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+accountd_image = "us-central1-docker.pkg.dev/hop-mesh/hop/hop-accountd@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+console_image  = "us-central1-docker.pkg.dev/hop-mesh/hop/hop-console@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+deployment_source_sha     = "0000000000000000000000000000000000000000"
+private_source_sha        = "80b18bd5837045845ef2f8ffdb222c1db0ae3a15"
+billing_price_ids_version = "1"
+deployment_environment    = "production"
+relay_identity_version    = "1"
+example_identity_version  = "1"
+
+# Empty uses all supported regions minus excluded_regions. A curated list avoids
+# requiring quota for every Cloud Run region.
+region_allowlist = ["us-central1", "europe-west1", "asia-southeast1"]
+
+domain = "relay.hopme.sh"

@@ -189,6 +189,22 @@ def check_ownership(
     # contain an observable step that builds or tests the component.
     raw = yaml.safe_load(ci_path.read_text(encoding="utf-8"))
     jobs = raw.get("jobs", {}) if isinstance(raw, dict) else {}
+    has_infra_surface = "infrastructure" in jobs or any(item.startswith("infra/") for item in files)
+    if has_infra_surface:
+        matches = match_path("infra/versions.tf", filters)
+        if "infra" not in matches and "full" not in matches:
+            errors.append(f"Hostile path 'infra/versions.tf' must match filter 'infra' (got: {sorted(matches)})")
+        changes_outputs = jobs.get("changes", {}).get("outputs", {})
+        if changes_outputs.get("infra") != "${{ steps.f.outputs.infra }}":
+            errors.append("changes job must export the infra filter result")
+        infrastructure = jobs.get("infrastructure", {})
+        infrastructure_if = str(infrastructure.get("if", ""))
+        for required in ("needs.changes.outputs.full == 'true'", "needs.changes.outputs.infra == 'true'"):
+            if required not in infrastructure_if:
+                errors.append(f"infrastructure job routing condition missing: {required}")
+        gate_needs = jobs.get("gate", {}).get("needs", [])
+        if not isinstance(gate_needs, list) or "infrastructure" not in gate_needs:
+            errors.append("CI gate does not depend on infrastructure validation")
 
     step_contracts = [
         {
@@ -210,6 +226,13 @@ def check_ownership(
             "step_marker": "testkit",
         },
     ]
+    if has_infra_surface:
+        step_contracts.append({
+            "path": "infra/versions.tf",
+            "filter": "infra",
+            "job": "infrastructure",
+            "step_marker": "tofu -chdir=infra validate",
+        })
 
     for contract in step_contracts:
         path_str = contract["path"]

@@ -8,7 +8,7 @@
 #
 # It opens a PR rather than pushing to main: main requires the aggregate "CI gate" context, which a
 # direct push can never satisfy (that is exactly how this silently broke, see the step below). The PR
-# is pushed with HOP_SYNC_TOKEN so CI actually fires, and pr-automerge.yml lands it once green.
+# is pushed with a repository-scoped GitHub App token so CI fires, and pr-automerge.yml lands it once green.
 name: Changelog
 
 on:
@@ -17,7 +17,7 @@ on:
   workflow_dispatch: {}
 
 permissions:
-  contents: read # the commit authenticates with HOP_SYNC_TOKEN, not GITHUB_TOKEN
+  contents: read # the commit authenticates with the scoped App token, not GITHUB_TOKEN
 
 concurrency:
   group: changelog
@@ -27,12 +27,23 @@ jobs:
   regenerate:
     if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    environment: release
+    environment: component-sync
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0 # git-cliff walks the whole history
           persist-credentials: false
+
+      - id: app-token
+        name: Create repository-scoped changelog token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.HOP_SYNC_APP_ID }}
+          private-key: ${{ secrets.HOP_SYNC_APP_PRIVATE_KEY }}
+          owner: hopmesh
+          repositories: hop
+          permission-contents: write
+          permission-pull-requests: write
 
       - name: Install git-cliff
         env:
@@ -58,11 +69,11 @@ jobs:
       # auto-merge on every non-draft PR at open, so this lands by itself once CI is green.
       #
       # The branch is run-scoped, so concurrent or retried runs never collide and nothing is
-      # force-pushed. HOP_SYNC_TOKEN (a real PAT, from the checkout above) attributes the push to a
-      # user, so CI actually fires on the PR; a GITHUB_TOKEN push would not trigger workflows.
+      # force-pushed. The short-lived repository-scoped App token attributes the push to the App, so
+      # CI fires on the PR; a GITHUB_TOKEN push would not trigger workflows.
       - name: Open a PR if anything changed
         env:
-          GH_TOKEN: ${{ secrets.HOP_SYNC_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           BRANCH: chore/changelog-${{ github.run_id }}
         run: |
           set -euo pipefail

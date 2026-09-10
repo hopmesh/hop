@@ -11,10 +11,11 @@
 # (h) routing apps/ble-lab/android without a consuming step in android fails,
 # (i) routing testkit/** under docs fails,
 # (j) routing testkit without a consuming step in automation fails,
-# (k) missing pyyaml dependency fails closed (PROC-017).
+# (k) infra filter/output/job routing fails closed, and (l) missing pyyaml fails closed (PROC-017).
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
 GUARD="$HERE/ci-path-ownership-guard.py"
 
 TMP="$(mktemp -d)"
@@ -496,6 +497,25 @@ EOF
 
 run_case "missing_testkit_consuming_step_fails" 1 "$TMP/ci_testkit_no_step.yml" "$TMP/files.txt"
 
+
+# (k) infrastructure routing must survive neither a dropped filter, output, nor job condition.
+python3 - "$ROOT/.github/workflows/ci.yml" "$TMP" <<'PY'
+import pathlib, sys
+source = pathlib.Path(sys.argv[1]).read_text()
+out = pathlib.Path(sys.argv[2])
+mutations = {
+    "infra-output": ("      infra: ${{ steps.f.outputs.infra }}\n", ""),
+    "infra-filter": ("            infra:\n              - 'infra/**'\n", "            infra: []\n"),
+    "infra-job-condition": ("needs.changes.outputs.full == 'true' || needs.changes.outputs.infra == 'true'", "needs.changes.outputs.full == 'true'"),
+}
+for name, (old, new) in mutations.items():
+    if source.count(old) != 1:
+        raise SystemExit(f"infra routing anchor not found exactly once: {name}")
+    (out / f"ci-no-{name}.yml").write_text(source.replace(old, new, 1))
+PY
+for name in infra-output infra-filter infra-job-condition; do
+  run_case "missing_$name fails" 1 "$TMP/ci-no-$name.yml" "$TMP/files.txt"
+done
 # (k) missing pyyaml dependency fails closed (PROC-017)
 mkdir -p "$TMP/empty_pythonpath"
 set +e

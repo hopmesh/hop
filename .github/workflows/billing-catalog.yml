@@ -1,0 +1,236 @@
+name: Billing catalog and Resend (hop canonical)
+
+on:
+  pull_request:
+    paths:
+      - infra/private-source.lock
+      - .github/workflows/billing-catalog.yml
+      - tools/private-source-pin.py
+      - tools/secondary-deploy-authority-guard.py
+      - tools/secondary-deploy-authority-guard.test.sh
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Plan or apply the pinned private billing root
+        required: true
+        type: choice
+        options: [plan, apply]
+      confirm:
+        description: Type deploy billing from hop main
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: hop-billing-catalog
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Billing deployment authority validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate secondary deployment authority
+        run: |
+          python3 tools/secondary-deploy-authority-guard.py
+          bash tools/secondary-deploy-authority-guard.test.sh
+
+  catalog:
+    name: Apply private billing source from hop main
+    needs: validate
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.repository == 'hopmesh/hop' &&
+      github.ref == 'refs/heads/main' &&
+      inputs.confirm == 'deploy billing from hop main'
+    runs-on: ubuntu-latest
+    environment: component-sync
+    env:
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      BILLING_WIF_PROVIDER: ${{ vars.GCP_BILLING_WIF_PROVIDER }}
+      BILLING_SERVICE_ACCOUNT: ${{ vars.GCP_BILLING_SERVICE_ACCOUNT }}
+      OPERATION: ${{ inputs.operation }}
+      EXPECTED_SHA: ${{ github.sha }}
+    steps:
+      - name: Check out canonical hop main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: public
+          fetch-depth: 0
+          persist-credentials: false
+
+      - id: pin
+        name: Validate and read private source pin
+        working-directory: public
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test "$EXPECTED_SHA" = "$(git ls-remote origin refs/heads/main | cut -f1)"
+          python3 tools/private-source-pin.py verify-lock --lock infra/private-source.lock
+          echo "repository=$(python3 tools/private-source-pin.py get --lock infra/private-source.lock repository)" >> "$GITHUB_OUTPUT"
+          echo "commit=$(python3 tools/private-source-pin.py get --lock infra/private-source.lock commit)" >> "$GITHUB_OUTPUT"
+
+      - id: auth
+        name: Authenticate billing deployment identity
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+          workload_identity_provider: ${{ env.BILLING_WIF_PROVIDER }}
+          service_account: ${{ env.BILLING_SERVICE_ACCOUNT }}
+
+      - id: private-source-token
+        name: Create read-only private source token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.HOP_SYNC_APP_ID }}
+          private-key: ${{ secrets.HOP_SYNC_APP_PRIVATE_KEY }}
+          owner: hopmesh
+          repositories: platform
+          permission-contents: read
+
+      - name: Require canonical deployment inputs
+        run: |
+          set -euo pipefail
+          for name in PROJECT_ID BILLING_WIF_PROVIDER BILLING_SERVICE_ACCOUNT; do
+            test -n "${!name}" || { echo "::error::$name is not configured"; exit 1; }
+          done
+          test -n "${{ steps.private-source-token.outputs.token }}"
+          test "$OPERATION" = plan -o "$OPERATION" = apply
+
+      - name: Check out exact private billing source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.pin.outputs.repository }}
+          ref: ${{ steps.pin.outputs.commit }}
+          token: ${{ steps.private-source-token.outputs.token }}
+          path: private
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify exact private checkout
+        run: |
+          python3 public/tools/private-source-pin.py verify-checkout \
+            --lock public/infra/private-source.lock --checkout private
+
+      - name: Load vendor credentials from Secret Manager without logging
+        run: |
+          set -euo pipefail
+          fetch_secret() {
+            local secret="$1" output="$2" value rc
+            set +e
+            value="$(gcloud secrets versions access latest --project "$PROJECT_ID" --secret "$secret" 2>"$RUNNER_TEMP/${secret}-access.log")"
+            rc=$?
+            set -e
+            if [ "$rc" -ne 0 ]; then
+              echo "::error::required vendor credential could not be read"
+              exit 1
+            fi
+            test -n "$value" || { echo "::error::required vendor credential is empty"; exit 1; }
+            case "$value" in *$'\n'*|*$'\r'*) echo "::error::vendor credential contains a line break"; exit 1;; esac
+            printf '::add-mask::%s\n' "$value"
+            printf '%s=%s\n' "$output" "$value" >> "$GITHUB_ENV"
+          }
+          fetch_secret stripe-api-key TF_VAR_stripe_api_key
+          fetch_secret hop-resend-apikey TF_VAR_resend_api_key
+
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: "1.12.3"
+          tofu_wrapper: false
+
+      - name: Create saved private billing plan
+        working-directory: private/infra/billing
+        run: |
+          set -euo pipefail
+          tofu init -input=false >"$RUNNER_TEMP/billing-init.log" 2>&1 || {
+            echo "::error::private billing initialization failed; detailed output withheld"
+            exit 1
+          }
+          tofu plan -input=false -no-color -out=tfplan >"$RUNNER_TEMP/billing-plan.log" 2>&1 || {
+            echo "::error::private billing plan failed; detailed output withheld"
+            exit 1
+          }
+          tofu show -json tfplan > /tmp/billing-plan.json
+
+      - name: Refuse billing deletion or replacement
+        run: |
+          python3 - /tmp/billing-plan.json <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1], encoding="utf-8"))
+          allowed = {(), ("no-op",), ("read",), ("create",), ("update",)}
+          bad = [(c.get("address"), tuple(c.get("change", {}).get("actions", [])))
+                 for c in data.get("resource_changes", [])
+                 if tuple(c.get("change", {}).get("actions", [])) not in allowed]
+          if bad:
+              raise SystemExit(f"billing plan contains forbidden actions: {bad}")
+          PY
+
+      - name: Refuse a superseded billing apply
+        if: env.OPERATION == 'apply'
+        working-directory: public
+        run: |
+          set -euo pipefail
+          tip="$(git ls-remote origin refs/heads/main | cut -f1)"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test "$tip" = "$EXPECTED_SHA" || { echo "::error::billing apply superseded by $tip"; exit 1; }
+
+      - id: apply
+        name: Apply the saved private billing plan
+        if: env.OPERATION == 'apply'
+        working-directory: private/infra/billing
+        run: |
+          set -euo pipefail
+          tofu apply -input=false -auto-approve -no-color tfplan >"$RUNNER_TEMP/billing-apply.log" 2>&1 || {
+            echo "::error::private billing apply failed; detailed output withheld"
+            exit 1
+          }
+          tofu output -json price_ids > /tmp/price-ids-raw.json 2>"$RUNNER_TEMP/billing-output.log" || {
+            echo "::error::private billing price output failed; detailed output withheld"
+            exit 1
+          }
+          echo "applied=true" >> "$GITHUB_OUTPUT"
+
+      # This remains in the same serialized job as apply. An older catalog run cannot publish last.
+      - name: Publish one validated billing price id version
+        if: steps.apply.outputs.applied == 'true'
+        env:
+          PRIVATE_SOURCE_SHA: ${{ steps.pin.outputs.commit }}
+        run: |
+          set -euo pipefail
+          python3 - /tmp/price-ids-raw.json /tmp/price-version.json "$PRIVATE_SOURCE_SHA" <<'PY'
+          import json, re, sys
+          raw = json.load(open(sys.argv[1], encoding="utf-8"))
+          value = raw.get("value", raw)
+          if set(value) != {"base", "reach", "observability"}:
+              raise SystemExit("price_ids output has unexpected keys")
+          if not all(isinstance(item, str) and re.fullmatch(r"price_[A-Za-z0-9]+", item) for item in value.values()):
+              raise SystemExit("price_ids output contains an invalid Stripe price id")
+          if not re.fullmatch(r"[0-9a-f]{40}", sys.argv[3]):
+              raise SystemExit("private source commit is not an exact SHA")
+          payload = {key: value[key] for key in ("base", "reach", "observability")}
+          payload["private_source_sha"] = sys.argv[3]
+          json.dump(payload, open(sys.argv[2], "w", encoding="utf-8"), separators=(",", ":"))
+          PY
+          set +e
+          name="$(gcloud secrets versions add hop-billing-price-ids --project "$PROJECT_ID" \
+            --data-file=/tmp/price-version.json --format='value(name)' 2>"$RUNNER_TEMP/price-publish.log")"
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::billing price version publication failed; detailed output withheld"
+            exit 1
+          fi
+          version="${name##*/}"
+          [[ "$version" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Secret Manager did not return a numeric version"; exit 1; }
+          echo "published hop-billing-price-ids version $version"
+
+      - name: Report plan-only result
+        if: env.OPERATION == 'plan'
+        run: echo "Billing and Resend plan validated; no external state changed."
