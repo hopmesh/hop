@@ -5,7 +5,7 @@ plugins {
     // below. Both builds are now on AGP 9.x and must be bumped together (they share module dirs).
     id("com.android.library") version "9.4.0" apply false
     id("org.jetbrains.kotlin.android") version "2.4.10" apply false
-    id("org.jetbrains.kotlin.jvm") version "2.4.10" apply false
+    id("org.jetbrains.kotlin.jvm") version "2.4.20" apply false
 }
 
 // The version every bearer POM carries. tools/release/plan.py parses this line as one of its manifests
