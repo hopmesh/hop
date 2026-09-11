@@ -8,7 +8,7 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 // the Apple xcframework. See CLAUDE.md for the layering.
 plugins {
     kotlin("multiplatform") version "2.4.10"
-    id("org.jetbrains.kotlin.plugin.compose") version "2.4.10"
+    id("org.jetbrains.kotlin.plugin.compose") version "2.4.20"
     id("org.jetbrains.compose") version "1.12.0"
     id("com.android.library") version "9.4.0"
     `maven-publish`
