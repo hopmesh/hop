@@ -272,6 +272,7 @@ git-cliff. Do not edit by hand.
 - keep old managed cert so the proxy cert-map swap applies cleanly (4d55d11)
 
 ### Build
+- bump koffi in /sdk/node in the node-sdk-dependencies group (0ed8c0f)
 - bump typescript in /sdk/react-native (d401399)
 - bump react-native and the @react-native/* packages from 0.87.0 to 0.87.1 in /apps/react-native/HopDemo (1d5e886)
 - align ble-lab android with AGP 9 and Kotlin 2 (de48d0e)
@@ -362,6 +363,7 @@ git-cliff. Do not edit by hand.
 - Kotlin 2.4/AGP 9.2.1/Compose BOM 2026.06/okhttp 5.4 toolchain migration (#90) (4d2e3c4)
 
 ### Documentation
+- regenerate from conventional commits (0d81f08)
 - regenerate from conventional commits (b9cbd37)
 - refine deploy attribution and commercial stack reconciliation plan (efbb987)
 - document repository authority and deploy reconciliation roadmap (baab023)
