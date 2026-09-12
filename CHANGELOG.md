@@ -363,6 +363,7 @@ git-cliff. Do not edit by hand.
 - Kotlin 2.4/AGP 9.2.1/Compose BOM 2026.06/okhttp 5.4 toolchain migration (#90) (4d2e3c4)
 
 ### Documentation
+- regenerate from conventional commits (54f5112)
 - regenerate from conventional commits (0d81f08)
 - regenerate from conventional commits (b9cbd37)
 - refine deploy attribution and commercial stack reconciliation plan (efbb987)
