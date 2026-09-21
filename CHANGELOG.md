@@ -272,6 +272,7 @@ git-cliff. Do not edit by hand.
 - keep old managed cert so the proxy cert-map swap applies cleanly (4d55d11)
 
 ### Build
+- bump koffi in /sdk/node in the node-sdk-dependencies group (d73e5d5)
 - bump koffi in /sdk/node in the node-sdk-dependencies group (0ed8c0f)
 - bump typescript in /sdk/react-native (d401399)
 - bump react-native and the @react-native/* packages from 0.87.0 to 0.87.1 in /apps/react-native/HopDemo (1d5e886)
@@ -363,6 +364,7 @@ git-cliff. Do not edit by hand.
 - Kotlin 2.4/AGP 9.2.1/Compose BOM 2026.06/okhttp 5.4 toolchain migration (#90) (4d2e3c4)
 
 ### Documentation
+- regenerate from conventional commits (3dc4a0d)
 - regenerate from conventional commits (a7b5562)
 - regenerate from conventional commits (f21cb57)
 - regenerate from conventional commits (54f5112)
