@@ -19,9 +19,13 @@ locals {
 
 
 # --- hop-accountd: the console backend ------------------------------------------------
-# min = 1 / cpu_idle = false: it runs the Firestore tenant-sync thread and a persistent Postgres pool,
-# both of which need always-allocated CPU and a warm instance. Its default run.app URI stays enabled
-# (NOT default_uri_disabled) so the console addresses it via google_cloud_run_v2_service.accountd.uri.
+# Warm (min = 1 / cpu_idle = false) only while the relay fleet is on. The Firestore tenant-sync thread
+# projects Postgres orgs into the registry the relays read, every 60s, outside request scope, so it needs
+# always-allocated CPU for that projection to stay fresh. With the fleet off nothing reads the registry:
+# every console write is durable in Postgres inside its request, and each process start runs a full
+# projection pass before its first sleep, so min = 0 / cpu_idle = true delays the projection without
+# losing a write. Its default run.app URI stays enabled (NOT default_uri_disabled) so the console
+# addresses it via google_cloud_run_v2_service.accountd.uri.
 #
 # Ingress is ALL so the console's server-side proxy (a separate Cloud Run service) can reach it over the
 # run.app URI without VPC plumbing. This is NOT an open door: every accountd route is authenticated at
@@ -77,10 +81,10 @@ resource "google_cloud_run_v2_service" "accountd" {
       "run.googleapis.com/cloudsql-instances" = var.console_db_connection_name
     }
 
-    # Always-on single instance: one tenant-sync writer, one warm PG pool. A second instance would
-    # double-write the Firestore tenant registry, so pin max = 1.
+    # At most one instance: one tenant-sync writer. A second instance would double-write the Firestore
+    # tenant registry, so pin max = 1. Warm only while relays are on (see the header comment).
     scaling {
-      min_instance_count = 1
+      min_instance_count = var.relays_enabled ? 1 : 0
       max_instance_count = 1
     }
 
@@ -207,8 +211,10 @@ resource "google_cloud_run_v2_service" "accountd" {
           cpu    = "1"
           memory = "512Mi"
         }
-        # Always-allocated CPU: the tenant-sync thread and PG pool run outside request scope.
-        cpu_idle = false
+        # Always-allocated CPU only while relays are on: the tenant-sync projection runs outside
+        # request scope and the relays depend on its freshness. The Postgres pool does not need it:
+        # connections are tested on checkout, and startup exits rather than serving without a pool.
+        cpu_idle = !var.relays_enabled
       }
 
       # hop-accountd serves readiness on /healthz (it has no /livez). Point both probes there.

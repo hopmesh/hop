@@ -66,8 +66,11 @@ They must not be assumed or fabricated by an engineer:
 2. **Spend and region authorization**:
    Enabling relays across multiple regions provisions Cloud Run services, ingress, and Firestore
    traffic. Even though Cloud Run scales to zero when idle (`min_instance_count = 0`), active relays
-   incur networking, log routing, and operational costs. The owner must authorize the target region
-   list and commit to the infrastructure spend.
+   incur networking, log routing, and operational costs. The same switch also warms two services that
+   scale to zero while the fleet is off: `hop-example` (holds a relay connection) and `hop-accountd`
+   (feeds the tenant registry the relays read) return to `min_instance_count = 1` with always-allocated
+   CPU, a fixed monthly cost whether or not any device connects. The owner must authorize the target
+   region list and commit to the infrastructure spend.
    Placeholder: `[OWNER: target region allowlist JSON array, e.g. '["us-central1", "europe-west1", "asia-east1"]' or '[]' for all available regions, and spend commitment]`
 3. **Enablement switch authorization**:
    The owner must authorize setting the repository variable `RELAYS_ENABLED = true` in `hopmesh/hop`.
