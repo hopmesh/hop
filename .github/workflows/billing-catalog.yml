@@ -137,8 +137,8 @@ jobs:
             printf '::add-mask::%s\n' "$value"
             printf '%s=%s\n' "$output" "$value" >> "$GITHUB_ENV"
           }
-          fetch_secret stripe-api-key TF_VAR_stripe_api_key
-          fetch_secret hop-resend-apikey TF_VAR_resend_api_key
+          fetch_secret stripe-catalog-api-key TF_VAR_stripe_api_key
+          fetch_secret resend-catalog-api-key TF_VAR_resend_api_key
 
       - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
         with:
@@ -208,9 +208,9 @@ jobs:
           import json, re, sys
           raw = json.load(open(sys.argv[1], encoding="utf-8"))
           value = raw.get("value", raw)
-          if set(value) != {"base", "reach", "observability"}:
-              raise SystemExit("price_ids output has unexpected keys")
-          if not all(isinstance(item, str) and re.fullmatch(r"price_[A-Za-z0-9]+", item) for item in value.values()):
+          if not isinstance(value, dict) or not {"base", "reach", "observability"}.issubset(value):
+              raise SystemExit("price_ids output is missing required keys")
+          if not all(isinstance(k, str) and isinstance(v, str) and re.fullmatch(r"price_[A-Za-z0-9]+", v) for k, v in value.items()):
               raise SystemExit("price_ids output contains an invalid Stripe price id")
           if not re.fullmatch(r"[0-9a-f]{40}", sys.argv[3]):
               raise SystemExit("private source commit is not an exact SHA")

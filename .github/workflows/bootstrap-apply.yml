@@ -198,8 +198,10 @@ jobs:
               "google_secret_manager_secret_iam_member.infra_drift_price_ids_viewer",
               "google_secret_manager_secret.billing_price_ids",
               "google_secret_manager_secret_iam_member.billing_catalog_price_ids_writer",
-              "google_secret_manager_secret_iam_member.billing_catalog_stripe_api_key_reader",
-              "google_secret_manager_secret_iam_member.billing_catalog_resend_api_key_reader",
+              "google_secret_manager_secret.stripe_catalog_api_key",
+              "google_secret_manager_secret.resend_catalog_api_key",
+              "google_secret_manager_secret_iam_member.billing_catalog_stripe_catalog_api_key_reader",
+              "google_secret_manager_secret_iam_member.billing_catalog_resend_catalog_api_key_reader",
               "google_secret_manager_secret_iam_member.deploy_billing_price_ids_accessor",
               "google_secret_manager_secret_iam_member.deploy_billing_price_ids_viewer",
           }
@@ -220,6 +222,8 @@ jobs:
           }
           normal_deletes = rollback_creates | {
               "google_storage_bucket_iam_member.deploy_billing_state_reader",
+              "google_secret_manager_secret_iam_member.billing_catalog_stripe_api_key_reader",
+              "google_secret_manager_secret_iam_member.billing_catalog_resend_api_key_reader",
           }
           unchanged = {(), ("no-op",), ("read",)}
           cleanup_retry_actions = {("create", "delete"), ("delete", "create")}

@@ -53,6 +53,11 @@ expect("billing token must stay read-only", "billing-catalog.yml", "permission-c
 expect("billing apply must use saved plan", "billing-catalog.yml", "tofu apply -input=false -auto-approve -no-color tfplan", "tofu apply -input=false -auto-approve -no-color")
 expect("price publication must follow apply", "billing-catalog.yml", "if: steps.apply.outputs.applied == 'true'", "if: always()")
 expect("published prices require private source SHA", "billing-catalog.yml", 'payload["private_source_sha"] = sys.argv[3]', 'payload["other"] = sys.argv[3]')
+expect("billing cannot read runtime Stripe secret", "billing-catalog.yml", "fetch_secret stripe-catalog-api-key TF_VAR_stripe_api_key", "fetch_secret stripe-api-key TF_VAR_stripe_api_key")
+expect("billing cannot read runtime Resend secret", "billing-catalog.yml", "fetch_secret resend-catalog-api-key TF_VAR_resend_api_key", "fetch_secret hop-resend-apikey TF_VAR_resend_api_key")
+expect("billing cannot fetch extra secret", "billing-catalog.yml", "fetch_secret resend-catalog-api-key TF_VAR_resend_api_key", "fetch_secret resend-catalog-api-key TF_VAR_resend_api_key\n          fetch_secret extra-secret TF_VAR_extra")
+expect("published prices require base reach observability", "billing-catalog.yml", '{"base", "reach", "observability"}.issubset(value)', '{"base", "reach"}.issubset(value)')
+expect("published prices cannot widen published keys", "billing-catalog.yml", 'payload = {key: value[key] for key in ("base", "reach", "observability")}', 'payload = dict(value)')
 expect("billing cannot tolerate failure", "billing-catalog.yml", "name: Apply the saved private billing plan", "name: Apply the saved private billing plan\n        continue-on-error: true")
 expect("billing requires component-sync environment", "billing-catalog.yml", "environment: component-sync", "environment: release")
 expect("billing apply refuses superseded main", "billing-catalog.yml", "test \"$tip\" = \"$EXPECTED_SHA\"", "test \"$tip\" != \"\"")
@@ -78,6 +83,8 @@ expect("bootstrap ancestor review phrase fixed", "bootstrap-apply.yml", "inputs.
 expect("bootstrap plan rejects prior addresses", "bootstrap-apply.yml", 'previous = item.get("previous_address")', 'previous = None')
 expect("bootstrap rollback actions phase-specific", "bootstrap-apply.yml", 'if operation == "rollback":\n                  if address == "google_iam_workload_identity_pool_provider.github"', 'if operation in {"rollback", "apply"}:\n                  if address == "google_iam_workload_identity_pool_provider.github"')
 expect("bootstrap replacement address set exact", "bootstrap-apply.yml", "normal_replacements = {", 'normal_replacements = {\n              "google_service_account.infra_drift",')
+expect("bootstrap mutable address set exact", "bootstrap-apply.yml", '"google_secret_manager_secret.stripe_catalog_api_key",', "")
+expect("bootstrap deletes address set exact", "bootstrap-apply.yml", '"google_secret_manager_secret_iam_member.billing_catalog_stripe_api_key_reader",', "")
 expect("bootstrap removed state accepts exact forget only", "bootstrap-apply.yml", 'address == "google_service_account.build"', 'address.startswith("google_service_account.")')
 expect("bootstrap proof checks complete service account policies", "bootstrap-apply.yml", 'raise SystemExit(f"{label} complete service-account IAM policy drifted")', "pass")
 expect("bootstrap proof checks workflow mapping", "bootstrap-apply.yml", '"attribute.workflow": "assertion.workflow_ref"', '"attribute.workflow": "assertion.actor"')
@@ -151,6 +158,17 @@ phase_plan("observed terminal cutover plan accepted", "apply", [
 phase_plan("tainted planned cleanup retry accepted", "apply", [
     {"address": "terraform_data.remove_legacy_iam_bindings", "change": {"actions": ["delete", "create"]}},
 ], True)
+phase_plan("catalog keys addition and old reader deletion accepted", "apply", [
+    {"address": "google_secret_manager_secret.stripe_catalog_api_key", "change": {"actions": ["create"]}},
+    {"address": "google_secret_manager_secret.resend_catalog_api_key", "change": {"actions": ["create"]}},
+    {"address": "google_secret_manager_secret_iam_member.billing_catalog_stripe_catalog_api_key_reader", "change": {"actions": ["create"]}},
+    {"address": "google_secret_manager_secret_iam_member.billing_catalog_resend_catalog_api_key_reader", "change": {"actions": ["create"]}},
+    {"address": "google_secret_manager_secret_iam_member.billing_catalog_stripe_api_key_reader", "change": {"actions": ["delete"]}},
+    {"address": "google_secret_manager_secret_iam_member.billing_catalog_resend_api_key_reader", "change": {"actions": ["delete"]}},
+], True)
+phase_plan("re-creating removed runtime reader rejected", "apply", [
+    {"address": "google_secret_manager_secret_iam_member.billing_catalog_stripe_api_key_reader", "change": {"actions": ["create"]}},
+], False)
 phase_plan("tainted planned cleanup retry accepted during rollback", "rollback", [
     {"address": "terraform_data.remove_legacy_iam_bindings", "change": {"actions": ["delete", "create"]}},
 ], True)
