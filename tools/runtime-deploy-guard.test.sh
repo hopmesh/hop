@@ -10,7 +10,9 @@ import re
 import shutil
 import subprocess
 import sys
+import os
 import tempfile
+import yaml
 
 root = pathlib.Path(sys.argv[1])
 spec = importlib.util.spec_from_file_location("guard", root / "tools/runtime-deploy-guard.py")
@@ -97,5 +99,202 @@ with tempfile.TemporaryDirectory() as directory:
     assert result.returncode != 0 and "not a JSON array" in result.stderr, result
     passed += 1
     print("ok   [stale REST price envelope rejected]")
+
+
+IMAGE_DIGESTS = {
+    "hop-relayd": "sha256:" + ("1" * 64),
+    "hop-example": "sha256:" + ("2" * 64),
+    "hop-accountd": "sha256:" + ("3" * 64),
+    "hop-console": "sha256:" + ("4" * 64),
+}
+DEPLOY_SHA = "ab" * 20
+PUBLIC_STEP = "Build and push public relay and example images first"
+PRIVATE_STEP = "Build and push pinned account and console images"
+DOCKER_STUB = r"""#!/usr/bin/env bash
+set -euo pipefail
+cmd="${1:-}"
+shift || true
+case "$cmd" in
+  build)
+    tag=""
+    prev=""
+    for arg in "$@"; do
+      if [ "$prev" = "-t" ]; then
+        tag="$arg"
+      fi
+      prev="$arg"
+    done
+    if [ -z "$tag" ]; then
+      echo "docker stub: build missing -t" >&2
+      exit 1
+    fi
+    # Dockerfile path (-f) and context are ignored. Progress goes to stdout, as docker does.
+    printf '%s\n' \
+      "#1 [internal] load build definition from Dockerfile" \
+      "#1 transferring dockerfile: 123B done" \
+      "#2 [internal] load metadata for docker.io/library/debian:bookworm" \
+      "Successfully tagged ${tag}"
+    ;;
+  push)
+    ref="${1:-}"
+    if [ -z "$ref" ]; then
+      echo "docker stub: push missing ref" >&2
+      exit 1
+    fi
+    name="${ref##*/}"
+    name="${name%%:*}"
+    case "$name" in
+__DIGEST_ARMS__
+      *) echo "docker stub: unknown image ${name}" >&2; exit 1 ;;
+    esac
+    if [ "${DOCKER_PUSH_FAIL:-}" = "1" ]; then
+      printf '%s\n' \
+        "The push refers to repository [${ref%:*}]" \
+        "9e318e74be6d: Preparing" \
+        "9e318e74be6d: Pushing" \
+        "error: failed to push ${ref}"
+      exit 1
+    fi
+    printf '%s\n' \
+      "The push refers to repository [${ref%:*}]" \
+      "9e318e74be6d: Preparing" \
+      "9e318e74be6d: Pushed" \
+      "${ref}: digest: ${digest} size: 1234"
+    ;;
+  *)
+    echo "docker stub: unsupported command: ${cmd}" >&2
+    exit 1
+    ;;
+esac
+"""
+
+
+def image_ref(name: str) -> str:
+    return f"us-central1-docker.pkg.dev/hop-mesh/hop/{name}@{IMAGE_DIGESTS[name]}"
+
+
+def step_run(workflow_path: pathlib.Path, name: str) -> str:
+    loaded = yaml.load(workflow_path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    if not isinstance(loaded, dict):
+        raise AssertionError(f"workflow is not a mapping: {workflow_path}")
+    steps = loaded.get("jobs", {}).get("deploy", {}).get("steps", [])
+    found = [step for step in steps if isinstance(step, dict) and step.get("name") == name]
+    if len(found) != 1:
+        raise AssertionError(f"expected one step named {name!r}, got {len(found)}")
+    run = found[0].get("run")
+    if not isinstance(run, str) or not run.strip():
+        raise AssertionError(f"step {name!r} has no run script")
+    return run
+
+
+def assert_exact_output(label: str, actual: str, expected: list[str]) -> None:
+    rendered = "\n".join(expected) + "\n"
+    if actual == rendered:
+        return
+    note = ""
+    if "Preparing" in actual or "9e318e74be6d:" in actual:
+        note = "docker progress leaked into GITHUB_OUTPUT (multi-line output)\n"
+    raise AssertionError(
+        f"{label}: GITHUB_OUTPUT is not exactly the single-line image refs\n"
+        f"{note}"
+        f"--- expected ---\n{rendered}"
+        f"--- actual ---\n{actual}"
+        f"--- end ---"
+    )
+
+
+def execute_image_step(script: str, *, push_fail: bool) -> tuple[int, str, str, str, dict[str, str]]:
+    arms = "\n".join(
+        f'      {name}) digest="{digest}" ;;'
+        for name, digest in IMAGE_DIGESTS.items()
+    )
+    with tempfile.TemporaryDirectory(prefix="runtime-deploy-image-") as directory_name:
+        directory = pathlib.Path(directory_name)
+        bin_dir = directory / "bin"
+        bin_dir.mkdir()
+        stub = bin_dir / "docker"
+        stub.write_text(DOCKER_STUB.replace("__DIGEST_ARMS__", arms))
+        stub.chmod(0o755)
+        logs = directory / "logs"
+        logs.mkdir()
+        output = directory / "github_output"
+        output.write_text("")
+        # The workflow hard-codes /tmp/*.log. Remap only the executed copy so parallel runs do not collide.
+        isolated = script.replace("/tmp/", f"{logs}/")
+        env = os.environ.copy()
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
+        env["AR_REGION"] = "us-central1"
+        env["PROJECT_ID"] = "hop-mesh"
+        env["DEPLOY_SHA"] = DEPLOY_SHA
+        env["GITHUB_OUTPUT"] = str(output)
+        env.pop("DOCKER_PUSH_FAIL", None)
+        if push_fail:
+            env["DOCKER_PUSH_FAIL"] = "1"
+        result = subprocess.run(
+            ["bash", "-c", isolated],
+            env=env,
+            cwd=directory,
+            capture_output=True,
+            text=True,
+        )
+        captured = {
+            path.name: path.read_text(encoding="utf-8", errors="replace")
+            for path in logs.iterdir()
+            if path.is_file()
+        }
+        return result.returncode, output.read_text(encoding="utf-8"), result.stdout, result.stderr, captured
+
+
+probe = subprocess.run(["bash", "-c", "shopt -s inherit_errexit"], capture_output=True, text=True)
+if probe.returncode != 0:
+    raise AssertionError(f"bash on PATH cannot inherit_errexit: {probe.stderr}")
+if len(DEPLOY_SHA) != 40 or any(char not in "0123456789abcdef" for char in DEPLOY_SHA):
+    raise AssertionError(f"DEPLOY_SHA must be 40 hex chars, got {DEPLOY_SHA!r}")
+
+workflow_path = root / ".github/workflows/runtime-deploy.yml"
+public_run = step_run(workflow_path, PUBLIC_STEP)
+private_run = step_run(workflow_path, PRIVATE_STEP)
+
+code, output, _stdout, stderr, _logs = execute_image_step(public_run, push_fail=False)
+if code != 0:
+    raise AssertionError(f"public image step failed on a successful push\nstdout:\n{_stdout}\nstderr:\n{stderr}")
+assert_exact_output(
+    "public images",
+    output,
+    [f"relay={image_ref('hop-relayd')}", f"example={image_ref('hop-example')}"],
+)
+if "9e318e74be6d: Preparing" not in stderr or "9e318e74be6d: Pushed" not in stderr:
+    raise AssertionError(f"public image progress was silenced; it must stay on stderr\nstderr:\n{stderr}")
+passed += 1
+print("ok   [public image refs are single-line and progress stays visible]")
+
+code, output, _stdout, stderr, _logs = execute_image_step(private_run, push_fail=False)
+if code != 0:
+    raise AssertionError(f"private image step failed on a successful push\nstdout:\n{_stdout}\nstderr:\n{stderr}")
+assert_exact_output(
+    "private images",
+    output,
+    [f"accountd={image_ref('hop-accountd')}", f"console={image_ref('hop-console')}"],
+)
+if "Preparing" in stderr or "digest:" in stderr or "Successfully tagged" in stderr:
+    raise AssertionError(f"private image step leaked build output\nstderr:\n{stderr}")
+passed += 1
+print("ok   [private image refs are single-line and output stays withheld]")
+
+code, output, _stdout, stderr, logs = execute_image_step(public_run, push_fail=True)
+push_ran = "9e318e74be6d: Preparing" in logs.get("relay-push.log", "") or "9e318e74be6d: Preparing" in stderr
+if not push_ran:
+    raise AssertionError(
+        "public push-fail case did not run docker push; non-zero exit would not prove the failure path\n"
+        f"stderr:\n{stderr}\nlogs:{sorted(logs)}"
+    )
+if code == 0 or "relay=" in output or "example=" in output:
+    raise AssertionError(
+        "public image step must exit non-zero and write no relay= or example= line when docker push fails\n"
+        f"exit={code}\nGITHUB_OUTPUT:\n{output}\nstderr:\n{stderr}"
+    )
+passed += 1
+print("ok   [public image step fails closed when docker push fails]")
+
 print(f"runtime deploy guard tests passed: {passed}")
 PY
