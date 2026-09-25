@@ -27,8 +27,9 @@ locals {
 #   gcloud secrets versions add hop-example-identity --project hop-mesh --data-file=/tmp/seed
 #   hop-endpoint --print-address --identity-file /tmp/seed
 #
-# The endpoint service. Always-on (min=1); one region is plenty for a demo. (F-39: NOT scale-to-zero
-# like the relays, the endpoint must stay relay-connected to be routable, so min_instance_count=1.)
+# The endpoint service. One region is plenty for a demo. It is warm (min=1, always-allocated CPU) only
+# while the relay fleet is on: that is when it must hold a relay connection to be routable (F-39). With
+# the fleet off it runs HOP_NO_RELAY and scales to zero like the console front.
 resource "google_cloud_run_v2_service" "example" {
   name     = "hop-example"
   location = var.example_region
@@ -57,11 +58,14 @@ resource "google_cloud_run_v2_service" "example" {
     service_account = local.example_service_account
     timeout         = "${var.ws_request_timeout_seconds}s"
 
-    # Always-on (min = 1): the endpoint must stay connected to the relay to be routable by
-    # its address, a scaled-to-zero endpoint disconnects, so messages to it just sit held on
-    # the relay. As a routable mesh leaf (DESIGN.md §30) it needs a persistent presence.
+    # Warm only while relays are on (min = 1): the endpoint must stay connected to the relay to be
+    # routable by its address; a scaled-to-zero endpoint disconnects, so messages to it just sit held on
+    # the relay. As a routable mesh leaf (DESIGN.md §30) it needs a persistent presence. With the fleet
+    # off there is no relay to hold, so nothing needs the instance between requests: min = 0. The
+    # /.well-known/hop record is signed at startup, and Cloud Run reclaims an idle instance well inside
+    # the record's 2h TTL, so request-only CPU does not leave an expired record being served.
     scaling {
-      min_instance_count = 1
+      min_instance_count = var.relays_enabled ? 1 : 0
       max_instance_count = 1
     }
 
@@ -119,10 +123,10 @@ resource "google_cloud_run_v2_service" "example" {
           cpu    = "1"
           memory = "512Mi"
         }
-        # Always-allocated CPU (not idle-throttled): the endpoint keeps a persistent outbound
-        # WebSocket to the relay in a background thread, which would stall under request-only
-        # CPU. Pairs with min_instance_count = 1.
-        cpu_idle = false
+        # Always-allocated CPU only while relays are on: the endpoint then keeps a persistent outbound
+        # WebSocket to the relay in a background thread, which would stall under request-only CPU. With
+        # the fleet off (HOP_NO_RELAY above) CPU is billed only while a request or socket is in flight.
+        cpu_idle = !var.relays_enabled
       }
     }
 
