@@ -13,7 +13,7 @@ import yaml
 BILLING = ".github/workflows/billing-catalog.yml"
 DRIFT = ".github/workflows/infra-drift.yml"
 BOOTSTRAP = ".github/workflows/bootstrap-apply.yml"
-BOOTSTRAP_PROOF_SHA256 = "cbda6b791e85ab8ee5ff31ffe7413daa111b3cd8bee94b02fc5e30326b4aad2e"
+BOOTSTRAP_PROOF_SHA256 = "17bcf1cbf80e21485f3bbb3177a49200bd58d18437cefbfae27d5df6e54566cd"
 
 
 def load(path: Path) -> dict:
