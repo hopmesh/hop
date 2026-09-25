@@ -38,6 +38,9 @@ init_test_repo() {
   local dir="$1"
   mkdir -p "$dir"
   git init -q "$dir"
+  # Detached auto-maintenance races the EXIT-trap rm -rf.
+  git -C "$dir" config maintenance.auto false
+  git -C "$dir" config gc.auto 0
   git -C "$dir" config user.name "Test Committer"
   git -C "$dir" config user.email "test@hopmesh.test"
   git -C "$dir" config commit.gpgsign false

@@ -22,6 +22,9 @@ TMP_DIR="$(mktemp -d /tmp/changelog-test.XXXXXX)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 git -C "$TMP_DIR" init -q
+# Detached auto-maintenance races the EXIT-trap rm -rf.
+git -C "$TMP_DIR" config maintenance.auto false
+git -C "$TMP_DIR" config gc.auto 0
 mkdir -p "$TMP_DIR/stray-tool"
 mkdir -p "$TMP_DIR/tools/copybara"
 mkdir -p "$TMP_DIR/core/hop-endpoint"
