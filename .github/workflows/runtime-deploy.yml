@@ -179,12 +179,16 @@ jobs:
         working-directory: public
         run: |
           set -euo pipefail
+          # Command substitution clears errexit unless this is set, so a failed
+          # build, push, or digest parse must fail the step instead of printing a ref.
+          shopt -s inherit_errexit
           registry="${AR_REGION}-docker.pkg.dev/${PROJECT_ID}/hop"
           build_push() {
             local image="$1" dockerfile="$2" log="$3"
             local tagged="${registry}/${image}:${DEPLOY_SHA}"
-            docker build --no-cache --pull -f "$dockerfile" -t "$tagged" .
-            docker push "$tagged" | tee "$log"
+            # Stdout is the image ref only. Progress stays visible on stderr and in the push log.
+            docker build --no-cache --pull -f "$dockerfile" -t "$tagged" . >&2
+            docker push "$tagged" | tee "$log" >&2
             local digest
             digest="$(python3 - "$log" <<'PY'
           import re, sys
@@ -251,6 +255,9 @@ jobs:
         working-directory: public
         run: |
           set -euo pipefail
+          # Digest parsing runs inside command substitution. Inherit errexit so a
+          # parse failure fails the step. Build and push already exit on their own.
+          shopt -s inherit_errexit
           registry="${AR_REGION}-docker.pkg.dev/${PROJECT_ID}/hop"
           build_push() {
             local image="$1" dockerfile="$2" log="$3"
