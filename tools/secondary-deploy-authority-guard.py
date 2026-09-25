@@ -96,21 +96,33 @@ def check_billing(root: Path) -> list[str]:
         errors.append("billing workflow retains the broad organization PAT")
     if "secretmanager.googleapis.com" in workflow_text or "curl " in workflow_text:
         errors.append("billing workflow downloads or writes API JSON through curl")
+    inputs = triggers.get("workflow_dispatch", {}).get("inputs", {})
+    operation = inputs.get("operation", {})
+    if operation.get("options") != ["plan", "apply", "publish"]:
+        errors.append("billing workflow operations must be plan, apply, publish")
+    for key in catalog.get("env", {}):
+        if "stripe" in key.lower() or "resend" in key.lower() or "tf_var" in key.lower():
+            errors.append(f"billing catalog job env must not define vendor credentials: {key}")
     try:
         public_index, public = step_by_name(catalog, "Check out canonical hop main")
         pin_index, pin = step_by_name(catalog, "Validate and read private source pin")
         token_index, token = step_by_name(catalog, "Create read-only private source token")
+        inputs_index, inputs_step = step_by_name(catalog, "Require canonical deployment inputs")
         checkout_index, checkout = step_by_name(catalog, "Check out exact private billing source")
         verify_index, _ = step_by_name(catalog, "Verify exact private checkout")
         credentials_index, credentials = step_by_name(catalog, "Load vendor credentials from Secret Manager without logging")
         plan_index, plan = step_by_name(catalog, "Create saved private billing plan")
-        policy_index, _ = step_by_name(catalog, "Refuse billing deletion or replacement")
+        policy_index, policy = step_by_name(catalog, "Refuse billing deletion or replacement")
+        publish_plan_index, publish_plan = step_by_name(catalog, "Prove the pinned billing root matches applied state without vendor calls")
         stale_index, stale = step_by_name(catalog, "Refuse a superseded billing apply")
         apply_index, apply = step_by_name(catalog, "Apply the saved private billing plan")
         publish_index, publish = step_by_name(catalog, "Publish one validated billing price id version")
-        order = [public_index, pin_index, token_index, checkout_index, verify_index, credentials_index, plan_index, policy_index, stale_index, apply_index, publish_index]
+        order = [public_index, pin_index, token_index, inputs_index, checkout_index, verify_index, credentials_index, plan_index, policy_index, publish_plan_index, stale_index, apply_index, publish_index]
         if order != sorted(order):
             errors.append("billing workflow order drifted")
+        inputs_text = inputs_step.get("run", "")
+        if '"$OPERATION" = publish' not in inputs_text:
+            errors.append("billing canonical inputs check must accept publish operation")
         if public.get("with", {}).get("ref") != "${{ github.sha }}" or catalog.get("env", {}).get("EXPECTED_SHA") != "${{ github.sha }}":
             errors.append("billing workflow does not pin the reviewed dispatch SHA")
         pin_text = pin.get("run", "")
@@ -129,26 +141,61 @@ def check_billing(root: Path) -> list[str]:
         }
         if checkout.get("with") != expected_checkout:
             errors.append("billing private checkout is not exact and credential-minimal")
+        if credentials.get("if") != "env.OPERATION != 'publish'":
+            errors.append("billing vendor credentials loader must skip publish operation")
         credentials_text = credentials.get("run", "")
         if credentials_text.count("gcloud secrets versions access latest") != 1 or "detailed" in credentials_text or "curl " in credentials_text:
             errors.append("billing vendor credential loader drifted")
         catalog_secrets = re.findall(r"^\s*fetch_secret\s+([^\s]+)\s+([^\s]+)\s*$", credentials_text, re.MULTILINE)
         if catalog_secrets != [("stripe-catalog-api-key", "TF_VAR_stripe_api_key"), ("resend-catalog-api-key", "TF_VAR_resend_api_key")]:
             errors.append("billing vendor credential loader must read only the two catalog secrets")
+        if plan.get("if") != "env.OPERATION != 'publish'":
+            errors.append("billing plan step must skip publish operation")
+        if policy.get("if") != "env.OPERATION != 'publish'":
+            errors.append("billing plan policy step must skip publish operation")
         plan_text = plan.get("run", "")
         if "-out=tfplan" not in plan_text or "tofu show -json tfplan" not in plan_text or 'billing-plan.log" 2>&1' not in plan_text or "detailed output withheld" not in plan_text:
             errors.append("billing workflow does not privately inspect one saved plan")
+        if publish_plan.get("if") != "env.OPERATION == 'publish'":
+            errors.append("billing publish plan step condition drifted")
+        if publish_plan.get("working-directory") != "private/infra/billing":
+            errors.append("billing publish plan step must run in private/infra/billing")
+        expected_publish_env = {
+            "TF_VAR_stripe_api_key": "offline-publish-no-vendor-access",
+            "TF_VAR_resend_api_key": "offline-publish-no-vendor-access",
+        }
+        if publish_plan.get("env") != expected_publish_env:
+            errors.append("billing publish plan step must define exact step-scoped placeholder vendor keys")
+        publish_plan_text = publish_plan.get("run", "")
+        if "GITHUB_ENV" in publish_plan_text:
+            errors.append("billing publish plan step must not export placeholder vendor keys to GITHUB_ENV")
+        if "-refresh=false" not in publish_plan_text:
+            errors.append("billing publish plan must use -refresh=false")
+        if "-detailed-exitcode" not in publish_plan_text:
+            errors.append("billing publish plan must use -detailed-exitcode")
+        if 'plan_rc" -eq 2' not in publish_plan_text or "pinned billing root differs from applied state" not in publish_plan_text:
+            errors.append("billing publish plan must reject state diff with exit code 2")
+        if 'plan_rc" -ne 0' not in publish_plan_text:
+            errors.append("billing publish plan must require exit code 0")
+        if "tofu output -json price_ids > /tmp/price-ids-raw.json" not in publish_plan_text:
+            errors.append("billing publish plan must write raw price ids output")
+        if 'echo "read=true" >> "$GITHUB_OUTPUT"' not in publish_plan_text:
+            errors.append("billing publish plan must set read=true step output")
         stale_text = stale.get("run", "")
-        if stale.get("if") != "env.OPERATION == 'apply'" or 'git rev-parse HEAD)" = "$EXPECTED_SHA' not in stale_text or '"$tip" = "$EXPECTED_SHA"' not in stale_text:
-            errors.append("billing apply is not rejected when hop main is superseded")
+        if stale.get("if") != "env.OPERATION == 'apply' || env.OPERATION == 'publish'" or 'git rev-parse HEAD)" = "$EXPECTED_SHA' not in stale_text or '"$tip" = "$EXPECTED_SHA"' not in stale_text:
+            errors.append("billing apply and publish must be rejected when hop main is superseded")
         apply_text = apply.get("run", "")
         if "tofu apply" not in apply_text or "tfplan" not in apply_text or "billing-apply.log" not in apply_text or "detailed output withheld" not in apply_text:
             errors.append("billing apply does not privately consume the saved plan")
         if apply.get("if") != "env.OPERATION == 'apply'":
             errors.append("billing apply condition drifted")
         publish_text = publish.get("run", "")
-        if publish.get("if") != "steps.apply.outputs.applied == 'true'" or "gcloud secrets versions add hop-billing-price-ids" not in publish_text or 'payload["private_source_sha"]' not in publish_text:
-            errors.append("billing price id version is not coupled to successful apply and private source")
+        expected_publish_condition = "steps.apply.outputs.applied == 'true' || steps.publish.outputs.read == 'true'"
+        if publish.get("if") != expected_publish_condition or "gcloud secrets versions add hop-billing-price-ids" not in publish_text or 'payload["private_source_sha"]' not in publish_text:
+            errors.append("billing price id version is not coupled to successful apply or publish and private source")
+        publisher_steps = [s for s in job_steps(catalog) if "gcloud secrets versions add hop-billing-price-ids" in s.get("run", "")]
+        if len(publisher_steps) != 1:
+            errors.append("billing workflow must have exactly one shared publisher step")
         for required in (
             '{"base", "reach", "observability"}.issubset(value)',
             'payload = {key: value[key] for key in ("base", "reach", "observability")}',

@@ -34,7 +34,9 @@ service-account bindings. Pull-request validation is credential-free.
 
 Billing and Resend changes use workflows in hop and source from the pinned private commit. They fetch
 vendor credentials from Secret Manager after WIF authentication. They never use GitHub repository
-secrets for Stripe or Resend.
+secrets for Stripe or Resend. The publish dispatch operation proves the pinned private root matches
+applied state using offline placeholder credentials and republishes existing price identifiers without
+reading vendor secrets.
 
 ## Rules
 
