@@ -92,9 +92,14 @@ resource "google_cloud_run_v2_service" "example" {
         name  = "HOP_TRUSTED_PROXY_HOPS"
         value = "1"
       }
+      # The Cloud Run data-plane proxy connects to the container from link-local space, and Google does
+      # not document one stable address (169.254.8.129 and 169.254.8.1 are both observed). Pinning a
+      # single /32 rejected every request from 2026-09-09 on. Link-local is not routable, and ingress is
+      # load-balancer only, so any 169.254.0.0/16 peer is the platform proxy. The load balancer's exact
+      # addresses are still required as the forwarded-chain suffix below.
       env {
         name  = "HOP_TRUSTED_PROXY_PEER_CIDRS"
-        value = "169.254.8.129/32"
+        value = "169.254.0.0/16"
       }
       env {
         name  = "HOP_TRUSTED_PROXY_SUFFIX_CIDRS"
