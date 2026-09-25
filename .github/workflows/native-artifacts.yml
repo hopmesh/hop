@@ -204,7 +204,7 @@ jobs:
           ref: ${{ needs.authorize.outputs.source_sha }}
           persist-credentials: false
       - name: Set up Android SDK
-        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+        uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
       # REL-005: with SQLCipher on (ABI-001) openssl-src builds vendored OpenSSL, and OpenSSL 3.6's
       # x86_64 SM3/SM4 assembly uses mnemonics (vsm3msg1, vsm4key4, ...) that NDK 26's LLVM 17
       # integrated assembler rejects. NDK 27 ships LLVM 18, which accepts them; all four ABIs were

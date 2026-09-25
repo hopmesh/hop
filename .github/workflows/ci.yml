@@ -454,7 +454,7 @@ jobs:
       # The KMP build configures an androidTarget, so AGP needs an Android SDK location to resolve even
       # for the desktop test task. No NDK / native library is needed: the compose SDK carries none.
       - name: Set up Android SDK
-        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+        uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
       # No gradle wrapper is committed for this module (same as sdk/android), so pin gradle here.
       - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
         with:
@@ -480,7 +480,7 @@ jobs:
           java-version: 17.0.19+10
       # The Android SDK + the AGP/platform packages the bearer + driver modules compile against.
       - name: Set up Android SDK
-        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+        uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
       - name: Install Rust toolchain
         run: |
           for attempt in 1 2 3; do
