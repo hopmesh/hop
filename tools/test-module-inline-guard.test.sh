@@ -63,6 +63,9 @@ trap 'rm -rf "$TMP"' EXIT
 FIXTURE="$TMP/repo"
 mkdir -p "$FIXTURE"
 git -C "$FIXTURE" init -q -b main
+# Detached auto-maintenance races the EXIT-trap rm -rf.
+git -C "$FIXTURE" config maintenance.auto false
+git -C "$FIXTURE" config gc.auto 0
 git -C "$FIXTURE" config user.name "Test Runner"
 git -C "$FIXTURE" config user.email "test@hopmesh.internal"
 git -C "$FIXTURE" config commit.gpgsign false

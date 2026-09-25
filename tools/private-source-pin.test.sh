@@ -54,6 +54,9 @@ expect fail crlf python3 "$CHECK" verify-lock --lock "$TMP/crlf.lock"
 
 checkout="$TMP/platform"
 git init -q "$checkout"
+# Detached auto-maintenance races the EXIT-trap rm -rf.
+git -C "$checkout" config maintenance.auto false
+git -C "$checkout" config gc.auto 0
 git -C "$checkout" config user.name test
 git -C "$checkout" config user.email test@example.invalid
 git -C "$checkout" config commit.gpgsign false
