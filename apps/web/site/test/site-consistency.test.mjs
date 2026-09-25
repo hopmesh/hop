@@ -439,6 +439,9 @@ test('BIZ-015: CLA templates must not contain generic template disclaimers, CONT
   const tmpRepo = mkdtempSync(join(tmpdir(), 'hop-dco-'));
   const git = (...args) => spawnSync('git', ['-C', tmpRepo, ...args], { env: { ...process.env, GIT_AUTHOR_NAME: 'Outside', GIT_AUTHOR_EMAIL: 'o@example.com', GIT_COMMITTER_NAME: 'Outside', GIT_COMMITTER_EMAIL: 'o@example.com' } });
   git('init', '-q');
+  // Detached auto-maintenance races the fixture cleanup rm.
+  git('config', 'maintenance.auto', 'false');
+  git('config', 'gc.auto', '0');
   git('-c', 'commit.gpgsign=false', 'commit', '-q', '--allow-empty', '-m', 'base');
   const base = git('rev-parse', 'HEAD').stdout.toString().trim();
   git('-c', 'commit.gpgsign=false', 'commit', '-q', '--allow-empty', '-m', 'unsigned change');
