@@ -177,8 +177,11 @@ mod tests {
         let full_elapsed = start_full.elapsed();
 
         let decode_ns = decode_elapsed.as_nanos() as f64 / ITERS as f64;
+        // Signed on purpose: on a noisy runner the decode+re-encode loop can finish faster than the
+        // decode-only loop, and an unsigned u128 subtraction then panics with overflow. A negative
+        // figure here is measurement noise, not a failure.
         let reencode_ns =
-            (reencode_elapsed.as_nanos() - decode_elapsed.as_nanos()) as f64 / ITERS as f64;
+            (reencode_elapsed.as_nanos() as f64 - decode_elapsed.as_nanos() as f64) / ITERS as f64;
         let full_ns = full_elapsed.as_nanos() as f64 / ITERS as f64;
 
         println!(
