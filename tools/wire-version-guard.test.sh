@@ -12,6 +12,9 @@ init_fixture() {
   repo="$WORK/$name"
   mkdir -p "$repo"
   git -C "$repo" init -q
+  # Detached auto-maintenance races the EXIT-trap rm -rf.
+  git -C "$repo" config maintenance.auto false
+  git -C "$repo" config gc.auto 0
   git -C "$repo" config user.name "Wire Guard Fixture"
   git -C "$repo" config user.email "wire-guard@example.invalid"
   mkdir -p "$repo/core/hop-core/src" "$repo/core/hop-core/vectors" "$repo/sim/pkg"

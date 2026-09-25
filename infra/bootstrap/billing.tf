@@ -34,6 +34,38 @@ resource "google_secret_manager_secret" "stripe_account_key" {
   depends_on = [google_project_service.this["secretmanager.googleapis.com"]]
 }
 
+# Dedicated Stripe restricted key for the billing catalog (products, prices, billing meters, webhook
+# endpoint). Seeded out of band after bootstrap has been applied; secret bytes never enter OpenTofu state.
+resource "google_secret_manager_secret" "stripe_catalog_api_key" {
+  secret_id = "stripe-catalog-api-key"
+
+  replication {
+    auto {}
+  }
+
+  lifecycle {
+    prevent_destroy = true
+  }
+
+  depends_on = [google_project_service.this["secretmanager.googleapis.com"]]
+}
+
+# Dedicated Resend API key with domain (full-access) scope for registering the sending domain in Resend.
+# Seeded out of band after bootstrap has been applied; secret bytes never enter OpenTofu state.
+resource "google_secret_manager_secret" "resend_catalog_api_key" {
+  secret_id = "resend-catalog-api-key"
+
+  replication {
+    auto {}
+  }
+
+  lifecycle {
+    prevent_destroy = true
+  }
+
+  depends_on = [google_project_service.this["secretmanager.googleapis.com"]]
+}
+
 # Container for the Stripe webhook signing secret hop-accountd consumes as STRIPE_WEBHOOK_SECRET. The
 # VALUE is written by the isolated billing root (infra/billing/webhook_secret.tf), which owns the
 # stripe_webhook_endpoint whose computed `secret` attribute this is; that root already holds the value
@@ -171,8 +203,8 @@ resource "google_iam_workload_identity_pool_provider" "github" {
     google_secret_manager_secret_iam_member.infra_drift_price_ids_accessor,
     google_secret_manager_secret_iam_member.infra_drift_price_ids_viewer,
     google_secret_manager_secret_iam_member.billing_catalog_price_ids_writer,
-    google_secret_manager_secret_iam_member.billing_catalog_resend_api_key_reader,
-    google_secret_manager_secret_iam_member.billing_catalog_stripe_api_key_reader,
+    google_secret_manager_secret_iam_member.billing_catalog_resend_catalog_api_key_reader,
+    google_secret_manager_secret_iam_member.billing_catalog_stripe_catalog_api_key_reader,
     google_secret_manager_secret_iam_member.deploy_billing_price_ids_accessor,
     google_secret_manager_secret_iam_member.deploy_billing_price_ids_viewer,
   ]
@@ -214,20 +246,18 @@ resource "google_secret_manager_secret_iam_member" "billing_catalog_price_ids_wr
   member    = "serviceAccount:${google_service_account.billing_catalog_apply.email}"
 }
 
-# The catalog apply reads the two vendor credentials it passes to the private providers. These are
-# container-scoped read grants; it cannot read any other project secret.
-resource "google_secret_manager_secret_iam_member" "billing_catalog_stripe_api_key_reader" {
-  secret_id = google_secret_manager_secret.stripe_api_key.secret_id
+# The catalog apply reads the two catalog vendor credentials it passes to the private providers. These are
+# container-scoped read grants; it cannot read any other project secret or runtime credentials.
+resource "google_secret_manager_secret_iam_member" "billing_catalog_stripe_catalog_api_key_reader" {
+  secret_id = google_secret_manager_secret.stripe_catalog_api_key.secret_id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.billing_catalog_apply.email}"
 }
 
-resource "google_secret_manager_secret_iam_member" "billing_catalog_resend_api_key_reader" {
-  secret_id = "hop-resend-apikey"
+resource "google_secret_manager_secret_iam_member" "billing_catalog_resend_catalog_api_key_reader" {
+  secret_id = google_secret_manager_secret.resend_catalog_api_key.secret_id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.billing_catalog_apply.email}"
-
-  depends_on = [google_project_service.this["secretmanager.googleapis.com"]]
 }
 
 resource "google_secret_manager_secret_iam_member" "deploy_billing_price_ids_accessor" {

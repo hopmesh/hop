@@ -747,8 +747,8 @@ def check(root):
         "google_secret_manager_secret_iam_member.infra_drift_price_ids_accessor",
         "google_secret_manager_secret_iam_member.infra_drift_price_ids_viewer",
         "google_secret_manager_secret_iam_member.billing_catalog_price_ids_writer",
-        "google_secret_manager_secret_iam_member.billing_catalog_resend_api_key_reader",
-        "google_secret_manager_secret_iam_member.billing_catalog_stripe_api_key_reader",
+        "google_secret_manager_secret_iam_member.billing_catalog_resend_catalog_api_key_reader",
+        "google_secret_manager_secret_iam_member.billing_catalog_stripe_catalog_api_key_reader",
         "google_secret_manager_secret_iam_member.deploy_billing_price_ids_accessor",
         "google_secret_manager_secret_iam_member.deploy_billing_price_ids_viewer",
     }
@@ -834,6 +834,13 @@ def check(root):
     price_lifecycle = top_level_block(price_secret, "lifecycle") or ""
     if not has_exact_top_level_assignment(price_secret, "secret_id", '"hop-billing-price-ids"') or top_level_block(price_replication, "auto") is None or not has_exact_top_level_assignment(price_lifecycle, "prevent_destroy", "true"):
         errors.append("billing price id secret container drifted")
+    for secret_name in ("stripe_catalog_api_key", "resend_catalog_api_key"):
+        secret_block = resource_block(bootstrap, "google_secret_manager_secret", secret_name) or ""
+        secret_id = f'"{secret_name.replace("_", "-")}"'
+        secret_replication = top_level_block(secret_block, "replication") or ""
+        secret_lifecycle = top_level_block(secret_block, "lifecycle") or ""
+        if not has_exact_top_level_assignment(secret_block, "secret_id", secret_id) or top_level_block(secret_replication, "auto") is None or not has_exact_top_level_assignment(secret_lifecycle, "prevent_destroy", "true"):
+            errors.append(f"billing catalog secret container drifted: {secret_name}")
     expected_price_grants = {
         "billing_catalog_price_ids_writer": ("google_service_account.billing_catalog_apply.email", '"roles/secretmanager.secretVersionAdder"'),
         "deploy_billing_price_ids_accessor": ("google_service_account.deploy.email", '"roles/secretmanager.secretAccessor"'),
@@ -846,8 +853,8 @@ def check(root):
         if not has_exact_top_level_assignment(block, "secret_id", "google_secret_manager_secret.billing_price_ids.secret_id") or not has_exact_top_level_assignment(block, "role", role) or not has_exact_top_level_assignment(block, "member", f'"serviceAccount:${{{member_name}}}"'):
             errors.append(f"billing price id secret grant drifted: {name}")
     vendor_readers = {
-        "billing_catalog_stripe_api_key_reader": "google_secret_manager_secret.stripe_api_key.secret_id",
-        "billing_catalog_resend_api_key_reader": '"hop-resend-apikey"',
+        "billing_catalog_stripe_catalog_api_key_reader": "google_secret_manager_secret.stripe_catalog_api_key.secret_id",
+        "billing_catalog_resend_catalog_api_key_reader": "google_secret_manager_secret.resend_catalog_api_key.secret_id",
     }
     for name, secret_id in vendor_readers.items():
         block = resource_block(bootstrap, "google_secret_manager_secret_iam_member", name) or ""

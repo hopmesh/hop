@@ -11,10 +11,10 @@ on:
   workflow_dispatch:
     inputs:
       operation:
-        description: Plan or apply the pinned private billing root
+        description: Plan, apply, or publish price ids from the pinned private billing root
         required: true
         type: choice
-        options: [plan, apply]
+        options: [plan, apply, publish]
       confirm:
         description: Type deploy billing from hop main
         required: true
@@ -102,7 +102,7 @@ jobs:
             test -n "${!name}" || { echo "::error::$name is not configured"; exit 1; }
           done
           test -n "${{ steps.private-source-token.outputs.token }}"
-          test "$OPERATION" = plan -o "$OPERATION" = apply
+          test "$OPERATION" = plan -o "$OPERATION" = apply -o "$OPERATION" = publish
 
       - name: Check out exact private billing source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -120,6 +120,7 @@ jobs:
             --lock public/infra/private-source.lock --checkout private
 
       - name: Load vendor credentials from Secret Manager without logging
+        if: env.OPERATION != 'publish'
         run: |
           set -euo pipefail
           fetch_secret() {
@@ -137,8 +138,8 @@ jobs:
             printf '::add-mask::%s\n' "$value"
             printf '%s=%s\n' "$output" "$value" >> "$GITHUB_ENV"
           }
-          fetch_secret stripe-api-key TF_VAR_stripe_api_key
-          fetch_secret hop-resend-apikey TF_VAR_resend_api_key
+          fetch_secret stripe-catalog-api-key TF_VAR_stripe_api_key
+          fetch_secret resend-catalog-api-key TF_VAR_resend_api_key
 
       - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
         with:
@@ -146,6 +147,7 @@ jobs:
           tofu_wrapper: false
 
       - name: Create saved private billing plan
+        if: env.OPERATION != 'publish'
         working-directory: private/infra/billing
         run: |
           set -euo pipefail
@@ -160,6 +162,7 @@ jobs:
           tofu show -json tfplan > /tmp/billing-plan.json
 
       - name: Refuse billing deletion or replacement
+        if: env.OPERATION != 'publish'
         run: |
           python3 - /tmp/billing-plan.json <<'PY'
           import json, sys
@@ -172,8 +175,38 @@ jobs:
               raise SystemExit(f"billing plan contains forbidden actions: {bad}")
           PY
 
+      - id: publish
+        name: Prove the pinned billing root matches applied state without vendor calls
+        if: env.OPERATION == 'publish'
+        working-directory: private/infra/billing
+        env:
+          TF_VAR_stripe_api_key: offline-publish-no-vendor-access
+          TF_VAR_resend_api_key: offline-publish-no-vendor-access
+        run: |
+          set -euo pipefail
+          tofu init -input=false >"$RUNNER_TEMP/billing-init.log" 2>&1 || {
+            echo "::error::private billing initialization failed; detailed output withheld"
+            exit 1
+          }
+          set +e
+          tofu plan -refresh=false -input=false -no-color -detailed-exitcode -out=tfplan >"$RUNNER_TEMP/billing-plan.log" 2>&1
+          plan_rc=$?
+          set -e
+          if [ "$plan_rc" -eq 2 ]; then
+            echo "::error::pinned billing root differs from applied state; a keyed plan/apply is required"
+            exit 1
+          elif [ "$plan_rc" -ne 0 ]; then
+            echo "::error::private billing plan verification failed with code $plan_rc; detailed output withheld"
+            exit 1
+          fi
+          tofu output -json price_ids > /tmp/price-ids-raw.json 2>"$RUNNER_TEMP/billing-output.log" || {
+            echo "::error::private billing price output failed; detailed output withheld"
+            exit 1
+          }
+          echo "read=true" >> "$GITHUB_OUTPUT"
+
       - name: Refuse a superseded billing apply
-        if: env.OPERATION == 'apply'
+        if: env.OPERATION == 'apply' || env.OPERATION == 'publish'
         working-directory: public
         run: |
           set -euo pipefail
@@ -199,7 +232,7 @@ jobs:
 
       # This remains in the same serialized job as apply. An older catalog run cannot publish last.
       - name: Publish one validated billing price id version
-        if: steps.apply.outputs.applied == 'true'
+        if: steps.apply.outputs.applied == 'true' || steps.publish.outputs.read == 'true'
         env:
           PRIVATE_SOURCE_SHA: ${{ steps.pin.outputs.commit }}
         run: |
@@ -208,9 +241,9 @@ jobs:
           import json, re, sys
           raw = json.load(open(sys.argv[1], encoding="utf-8"))
           value = raw.get("value", raw)
-          if set(value) != {"base", "reach", "observability"}:
-              raise SystemExit("price_ids output has unexpected keys")
-          if not all(isinstance(item, str) and re.fullmatch(r"price_[A-Za-z0-9]+", item) for item in value.values()):
+          if not isinstance(value, dict) or not {"base", "reach", "observability"}.issubset(value):
+              raise SystemExit("price_ids output is missing required keys")
+          if not all(isinstance(k, str) and isinstance(v, str) and re.fullmatch(r"price_[A-Za-z0-9]+", v) for k, v in value.items()):
               raise SystemExit("price_ids output contains an invalid Stripe price id")
           if not re.fullmatch(r"[0-9a-f]{40}", sys.argv[3]):
               raise SystemExit("private source commit is not an exact SHA")

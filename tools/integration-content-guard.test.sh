@@ -12,6 +12,7 @@
 #   6. Synthetic fixture: catches dropped/superseded commits on a lane branch.
 #   7. Synthetic fixture: rejects lanes with merge conflicts.
 #   8. Usage: rejects invalid or missing git refs.
+#   9. Fixture git repos disable detached auto-maintenance.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -67,6 +68,9 @@ trap 'rm -rf "$TMP"' EXIT
 FIXTURE="$TMP/repo"
 mkdir -p "$FIXTURE"
 git -C "$FIXTURE" init -q -b main
+# Detached auto-maintenance races the EXIT-trap rm -rf.
+git -C "$FIXTURE" config maintenance.auto false
+git -C "$FIXTURE" config gc.auto 0
 git -C "$FIXTURE" config user.name "Test Runner"
 git -C "$FIXTURE" config user.email "test@hopmesh.internal"
 git -C "$FIXTURE" config commit.gpgsign false
@@ -180,6 +184,137 @@ if [ "$status" -eq 2 ]; then
   record_pass "invalid integration ref exits with code 2"
 else
   record_fail "invalid integration ref returned code $status (expected 2)"
+fi
+
+# 9. A commit spawns `git maintenance run --auto --detach`, which races the
+# EXIT-trap rm -rf. New fixture tests must disable that immediately after init.
+check_fixture_maintenance() {
+  python3 - "$1" <<'PY'
+import os
+import re
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+skip_dirs = {".git", "node_modules", "target", "pkg", "dist", ".build", "DerivedData", "vendor"}
+shell_create = re.compile(
+    r"(?:^|[;&|(`]\s*)git(?:\s+(?:-C|-c|--git-dir|--work-tree)\s+\S+|\s+-[A-Za-z]+)*\s+(?:init|clone)\b"
+)
+js_create = re.compile(
+    r"""git\(\s*['"](?:init|clone)['"]|\[\s*['"]git['"]\s*,\s*['"](?:init|clone)['"]"""
+)
+maint_re = re.compile(r"""maintenance\.auto(?:\s+false\b|['"]\s*,\s*['"]false['"])""")
+gc_re = re.compile(r"""gc\.auto(?:\s+0\b|['"]\s*,\s*['"]0['"])""")
+heredoc_re = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+
+def strip_shell_comment(line):
+    out = []
+    quote = None
+    i = 0
+    while i < len(line):
+        ch = line[i]
+        if quote:
+            out.append(ch)
+            if ch == quote and line[i - 1] != "\\":
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "#":
+            break
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+def is_test(name):
+    return ".test." in name and name.rsplit(".", 1)[-1] in {"sh", "mjs", "js", "py"}
+
+offenders = []
+for dirpath, dirnames, filenames in os.walk(root):
+    dirnames[:] = [d for d in dirnames if d not in skip_dirs and not d.startswith(".")]
+    for name in sorted(filenames):
+        if not is_test(name):
+            continue
+        path = Path(dirpath) / name
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        suffix = path.suffix
+        delim = None
+        for idx, raw in enumerate(lines):
+            if delim is not None:
+                if raw.strip() == delim:
+                    delim = None
+                continue
+            if suffix == ".sh":
+                code = strip_shell_comment(raw)
+                created = shell_create.search(code) is not None
+            else:
+                stripped = raw.lstrip()
+                if stripped.startswith("//") or stripped.startswith("#"):
+                    continue
+                code = raw
+                created = js_create.search(code) is not None
+            if created:
+                window = "\n".join(lines[idx + 1:idx + 9])
+                if not (maint_re.search(window) and gc_re.search(window)):
+                    rel = path.relative_to(root)
+                    offenders.append(
+                        f"{rel}:{idx + 1}: fixture git repo missing maintenance.auto false and gc.auto 0"
+                    )
+            if suffix == ".sh":
+                found = heredoc_re.search(code)
+                if found:
+                    delim = found.group(2)
+
+if offenders:
+    print("\n".join(offenders))
+    sys.exit(1)
+sys.exit(0)
+PY
+}
+
+echo "Test 9: fixture repos disable detached auto-maintenance"
+ok_root="$TMP/gate-ok"
+bad_root="$TMP/gate-bad"
+mkdir -p "$ok_root/tools" "$bad_root/tools"
+cp "$HERE/gen-changelogs.test.sh" "$ok_root/tools/gen-changelogs.test.sh"
+sed '/maintenance\.auto false/d' "$HERE/gen-changelogs.test.sh" > "$bad_root/tools/gen-changelogs.test.sh"
+
+ok_out=""
+ok_code=0
+ok_out="$(check_fixture_maintenance "$ok_root" 2>&1)" || ok_code=$?
+if [ "$ok_code" -eq 0 ]; then
+  record_pass "fixture copy that sets maintenance.auto is accepted"
+else
+  printf '%s\n' "$ok_out" >&2
+  record_fail "fixture copy that sets maintenance.auto was rejected"
+fi
+
+mut_out=""
+mut_code=0
+mut_out="$(check_fixture_maintenance "$bad_root" 2>&1)" || mut_code=$?
+case "$mut_out" in
+  *missing\ maintenance.auto*)
+    echo "  gate rejected mutated copy: $mut_out"
+    record_pass "mutated fixture copy missing maintenance.auto is rejected"
+    ;;
+  *)
+    printf '%s\n' "$mut_out" >&2
+    record_fail "mutated fixture copy missing maintenance.auto was not rejected (code $mut_code)"
+    ;;
+esac
+
+live_out=""
+live_code=0
+live_out="$(check_fixture_maintenance "$ROOT" 2>&1)" || live_code=$?
+if [ "$live_code" -eq 0 ]; then
+  record_pass "live fixture repos disable detached auto-maintenance"
+else
+  printf '%s\n' "$live_out" >&2
+  record_fail "live fixture repo missing maintenance.auto or gc.auto"
 fi
 
 echo ""

@@ -59,6 +59,9 @@ run_case() {
 REPO="$TMP/repo"
 mkdir -p "$REPO"
 git -C "$REPO" init -q -b main
+# Detached auto-maintenance races the EXIT-trap rm -rf.
+git -C "$REPO" config maintenance.auto false
+git -C "$REPO" config gc.auto 0
 git -C "$REPO" config user.name "Test Runner"
 git -C "$REPO" config user.email "test@example.com"
 echo "initial" > "$REPO/file.txt"

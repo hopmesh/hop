@@ -51,12 +51,35 @@ expect("billing PR validation cannot read a secret", "billing-catalog.yml", "nam
 expect("billing checkout cannot use main", "billing-catalog.yml", "ref: ${{ steps.pin.outputs.commit }}", "ref: main")
 expect("billing token must stay read-only", "billing-catalog.yml", "permission-contents: read", "permission-contents: write")
 expect("billing apply must use saved plan", "billing-catalog.yml", "tofu apply -input=false -auto-approve -no-color tfplan", "tofu apply -input=false -auto-approve -no-color")
-expect("price publication must follow apply", "billing-catalog.yml", "if: steps.apply.outputs.applied == 'true'", "if: always()")
+expect("price publication must follow apply or publish", "billing-catalog.yml", "if: steps.apply.outputs.applied == 'true' || steps.publish.outputs.read == 'true'", "if: always()")
 expect("published prices require private source SHA", "billing-catalog.yml", 'payload["private_source_sha"] = sys.argv[3]', 'payload["other"] = sys.argv[3]')
+expect("billing cannot read runtime Stripe secret", "billing-catalog.yml", "fetch_secret stripe-catalog-api-key TF_VAR_stripe_api_key", "fetch_secret stripe-api-key TF_VAR_stripe_api_key")
+expect("billing cannot read runtime Resend secret", "billing-catalog.yml", "fetch_secret resend-catalog-api-key TF_VAR_resend_api_key", "fetch_secret hop-resend-apikey TF_VAR_resend_api_key")
+expect("billing cannot fetch extra secret", "billing-catalog.yml", "fetch_secret resend-catalog-api-key TF_VAR_resend_api_key", "fetch_secret resend-catalog-api-key TF_VAR_resend_api_key\n          fetch_secret extra-secret TF_VAR_extra")
+expect("published prices require base reach observability", "billing-catalog.yml", '{"base", "reach", "observability"}.issubset(value)', '{"base", "reach"}.issubset(value)')
+expect("published prices cannot widen published keys", "billing-catalog.yml", 'payload = {key: value[key] for key in ("base", "reach", "observability")}', 'payload = dict(value)')
 expect("billing cannot tolerate failure", "billing-catalog.yml", "name: Apply the saved private billing plan", "name: Apply the saved private billing plan\n        continue-on-error: true")
 expect("billing requires component-sync environment", "billing-catalog.yml", "environment: component-sync", "environment: release")
 expect("billing apply refuses superseded main", "billing-catalog.yml", "test \"$tip\" = \"$EXPECTED_SHA\"", "test \"$tip\" != \"\"")
-expect("billing plan output remains withheld", "billing-catalog.yml", 'billing-plan.log" 2>&1', 'billing-plan.log"')
+expect("billing plan output remains withheld", "billing-catalog.yml", 'billing-plan.log" 2>&1', 'billing-plan.log"', first=True)
+expect("billing operations must be exact", "billing-catalog.yml", "options: [plan, apply, publish]", "options: [plan, apply]")
+expect("billing canonical inputs check must accept publish", "billing-catalog.yml", '-o "$OPERATION" = publish', "")
+expect("billing catalog job env must not define vendor credentials", "billing-catalog.yml", "OPERATION: ${{ inputs.operation }}", "OPERATION: ${{ inputs.operation }}\n      TF_VAR_stripe_api_key: offline-publish-no-vendor-access")
+expect("billing vendor credentials loader must skip publish", "billing-catalog.yml", "if: env.OPERATION != 'publish'", "if: always()", first=True)
+expect("billing plan must skip publish", "billing-catalog.yml", "name: Create saved private billing plan\n        if: env.OPERATION != 'publish'", "name: Create saved private billing plan")
+expect("billing policy must skip publish", "billing-catalog.yml", "name: Refuse billing deletion or replacement\n        if: env.OPERATION != 'publish'", "name: Refuse billing deletion or replacement")
+expect("billing publish plan must use exact condition", "billing-catalog.yml", "if: env.OPERATION == 'publish'", "if: always()")
+expect("billing publish plan must run in private billing root", "billing-catalog.yml", "working-directory: private/infra/billing\n        env:\n          TF_VAR_stripe_api_key: offline-publish-no-vendor-access", "working-directory: public\n        env:\n          TF_VAR_stripe_api_key: offline-publish-no-vendor-access")
+expect("billing publish plan requires step-scoped placeholder keys", "billing-catalog.yml", "TF_VAR_stripe_api_key: offline-publish-no-vendor-access", "TF_VAR_stripe_api_key: custom-key")
+expect("billing publish plan must not export to GITHUB_ENV", "billing-catalog.yml", 'echo "read=true" >> "$GITHUB_OUTPUT"', 'echo "read=true" >> "$GITHUB_OUTPUT"\n          echo "TF_VAR_stripe_api_key=bad" >> "$GITHUB_ENV"')
+expect("billing publish plan must use refresh false", "billing-catalog.yml", "tofu plan -refresh=false", "tofu plan -refresh=true")
+expect("billing publish plan must use detailed exit code", "billing-catalog.yml", "-detailed-exitcode -out=tfplan", "-out=tfplan")
+expect("billing publish plan must reject state diff with exit code 2", "billing-catalog.yml", "pinned billing root differs from applied state", "differs")
+expect("billing publish plan must require exit code 0", "billing-catalog.yml", '[ "$plan_rc" -ne 0 ]', '[ "$plan_rc" -eq 99 ]')
+expect("billing publish plan must write raw price ids", "billing-catalog.yml", "tofu output -json price_ids > /tmp/price-ids-raw.json 2>\"$RUNNER_TEMP/billing-output.log\" || {\n            echo \"::error::private billing price output failed; detailed output withheld\"\n            exit 1\n          }\n          echo \"read=true\"", "echo \"read=true\"")
+expect("billing publish plan must set step output", "billing-catalog.yml", 'echo "read=true" >> "$GITHUB_OUTPUT"', 'echo "done=true" >> "$GITHUB_OUTPUT"')
+expect("billing apply and publish refuse superseded main", "billing-catalog.yml", "if: env.OPERATION == 'apply' || env.OPERATION == 'publish'", "if: env.OPERATION == 'apply'")
+expect("billing workflow must have exactly one shared publisher step", "billing-catalog.yml", "name: Report plan-only result", "name: Second publisher\n        run: gcloud secrets versions add hop-billing-price-ids\n      - name: Report plan-only result")
 
 expect("drift cannot use bootstrap authority", "infra-drift.yml", "DRIFT_SERVICE_ACCOUNT: ${{ vars.GCP_DRIFT_SERVICE_ACCOUNT }}", "BOOTSTRAP_SERVICE_ACCOUNT: ${{ vars.GCP_BOOTSTRAP_SERVICE_ACCOUNT }}")
 expect("drift cannot apply", "infra-drift.yml", "tofu plan -input=false", "tofu apply -input=false")
@@ -78,6 +101,8 @@ expect("bootstrap ancestor review phrase fixed", "bootstrap-apply.yml", "inputs.
 expect("bootstrap plan rejects prior addresses", "bootstrap-apply.yml", 'previous = item.get("previous_address")', 'previous = None')
 expect("bootstrap rollback actions phase-specific", "bootstrap-apply.yml", 'if operation == "rollback":\n                  if address == "google_iam_workload_identity_pool_provider.github"', 'if operation in {"rollback", "apply"}:\n                  if address == "google_iam_workload_identity_pool_provider.github"')
 expect("bootstrap replacement address set exact", "bootstrap-apply.yml", "normal_replacements = {", 'normal_replacements = {\n              "google_service_account.infra_drift",')
+expect("bootstrap mutable address set exact", "bootstrap-apply.yml", '"google_secret_manager_secret.stripe_catalog_api_key",', "")
+expect("bootstrap deletes address set exact", "bootstrap-apply.yml", '"google_secret_manager_secret_iam_member.billing_catalog_stripe_api_key_reader",', "")
 expect("bootstrap removed state accepts exact forget only", "bootstrap-apply.yml", 'address == "google_service_account.build"', 'address.startswith("google_service_account.")')
 expect("bootstrap proof checks complete service account policies", "bootstrap-apply.yml", 'raise SystemExit(f"{label} complete service-account IAM policy drifted")', "pass")
 expect("bootstrap proof checks workflow mapping", "bootstrap-apply.yml", '"attribute.workflow": "assertion.workflow_ref"', '"attribute.workflow": "assertion.actor"')
@@ -151,6 +176,17 @@ phase_plan("observed terminal cutover plan accepted", "apply", [
 phase_plan("tainted planned cleanup retry accepted", "apply", [
     {"address": "terraform_data.remove_legacy_iam_bindings", "change": {"actions": ["delete", "create"]}},
 ], True)
+phase_plan("catalog keys addition and old reader deletion accepted", "apply", [
+    {"address": "google_secret_manager_secret.stripe_catalog_api_key", "change": {"actions": ["create"]}},
+    {"address": "google_secret_manager_secret.resend_catalog_api_key", "change": {"actions": ["create"]}},
+    {"address": "google_secret_manager_secret_iam_member.billing_catalog_stripe_catalog_api_key_reader", "change": {"actions": ["create"]}},
+    {"address": "google_secret_manager_secret_iam_member.billing_catalog_resend_catalog_api_key_reader", "change": {"actions": ["create"]}},
+    {"address": "google_secret_manager_secret_iam_member.billing_catalog_stripe_api_key_reader", "change": {"actions": ["delete"]}},
+    {"address": "google_secret_manager_secret_iam_member.billing_catalog_resend_api_key_reader", "change": {"actions": ["delete"]}},
+], True)
+phase_plan("re-creating removed runtime reader rejected", "apply", [
+    {"address": "google_secret_manager_secret_iam_member.billing_catalog_stripe_api_key_reader", "change": {"actions": ["create"]}},
+], False)
 phase_plan("tainted planned cleanup retry accepted during rollback", "rollback", [
     {"address": "terraform_data.remove_legacy_iam_bindings", "change": {"actions": ["delete", "create"]}},
 ], True)
