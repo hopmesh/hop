@@ -13,7 +13,7 @@ import yaml
 BILLING = ".github/workflows/billing-catalog.yml"
 DRIFT = ".github/workflows/infra-drift.yml"
 BOOTSTRAP = ".github/workflows/bootstrap-apply.yml"
-BOOTSTRAP_PROOF_SHA256 = "cbda6b791e85ab8ee5ff31ffe7413daa111b3cd8bee94b02fc5e30326b4aad2e"
+BOOTSTRAP_PROOF_SHA256 = "17bcf1cbf80e21485f3bbb3177a49200bd58d18437cefbfae27d5df6e54566cd"
 
 
 def load(path: Path) -> dict:
@@ -132,6 +132,9 @@ def check_billing(root: Path) -> list[str]:
         credentials_text = credentials.get("run", "")
         if credentials_text.count("gcloud secrets versions access latest") != 1 or "detailed" in credentials_text or "curl " in credentials_text:
             errors.append("billing vendor credential loader drifted")
+        catalog_secrets = re.findall(r"^\s*fetch_secret\s+([^\s]+)\s+([^\s]+)\s*$", credentials_text, re.MULTILINE)
+        if catalog_secrets != [("stripe-catalog-api-key", "TF_VAR_stripe_api_key"), ("resend-catalog-api-key", "TF_VAR_resend_api_key")]:
+            errors.append("billing vendor credential loader must read only the two catalog secrets")
         plan_text = plan.get("run", "")
         if "-out=tfplan" not in plan_text or "tofu show -json tfplan" not in plan_text or 'billing-plan.log" 2>&1' not in plan_text or "detailed output withheld" not in plan_text:
             errors.append("billing workflow does not privately inspect one saved plan")
@@ -146,6 +149,12 @@ def check_billing(root: Path) -> list[str]:
         publish_text = publish.get("run", "")
         if publish.get("if") != "steps.apply.outputs.applied == 'true'" or "gcloud secrets versions add hop-billing-price-ids" not in publish_text or 'payload["private_source_sha"]' not in publish_text:
             errors.append("billing price id version is not coupled to successful apply and private source")
+        for required in (
+            '{"base", "reach", "observability"}.issubset(value)',
+            'payload = {key: value[key] for key in ("base", "reach", "observability")}',
+        ):
+            if required not in publish_text:
+                errors.append(f"billing price publication missing exact key contract: {required}")
     except ValueError as error:
         errors.append(str(error))
     return errors
@@ -305,7 +314,7 @@ def check_bootstrap(root: Path) -> list[str]:
         if policy_text.count("address in cleanup_replacements and actions in cleanup_retry_actions") != 2:
             errors.append("bootstrap cleanup retry is not admitted in both apply and rollback")
         def embedded_set(name):
-            match = re.search(rf"(?ms)^\s*{re.escape(name)}\s*=\s*\{{(.*?)^\s*\}}", policy_text)
+            match = re.search(rf"(?ms)^\s*{re.escape(name)}\s*=\s*(?:rollback_creates\s*\|\s*)?\{{(.*?)^\s*\}}", policy_text)
             return set(re.findall(r'"([^"]+)"', match.group(1))) if match else None
         expected_sets = {
             "normal_mutable": {
@@ -323,8 +332,10 @@ def check_bootstrap(root: Path) -> list[str]:
                 "google_secret_manager_secret_iam_member.infra_drift_price_ids_viewer",
                 "google_secret_manager_secret.billing_price_ids",
                 "google_secret_manager_secret_iam_member.billing_catalog_price_ids_writer",
-                "google_secret_manager_secret_iam_member.billing_catalog_stripe_api_key_reader",
-                "google_secret_manager_secret_iam_member.billing_catalog_resend_api_key_reader",
+                "google_secret_manager_secret.stripe_catalog_api_key",
+                "google_secret_manager_secret.resend_catalog_api_key",
+                "google_secret_manager_secret_iam_member.billing_catalog_stripe_catalog_api_key_reader",
+                "google_secret_manager_secret_iam_member.billing_catalog_resend_catalog_api_key_reader",
                 "google_secret_manager_secret_iam_member.deploy_billing_price_ids_accessor",
                 "google_secret_manager_secret_iam_member.deploy_billing_price_ids_viewer",
             },
@@ -342,6 +353,11 @@ def check_bootstrap(root: Path) -> list[str]:
                 "google_service_account_iam_member.bootstrap_apply_wif_platform_rollback[0]",
                 "google_service_account_iam_member.billing_catalog_wif_platform_rollback[0]",
                 "google_storage_bucket_iam_member.deploy_billing_state_reader[0]",
+            },
+            "normal_deletes": {
+                "google_storage_bucket_iam_member.deploy_billing_state_reader",
+                "google_secret_manager_secret_iam_member.billing_catalog_stripe_api_key_reader",
+                "google_secret_manager_secret_iam_member.billing_catalog_resend_api_key_reader",
             },
         }
         for name, expected in expected_sets.items():

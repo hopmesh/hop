@@ -198,8 +198,10 @@ jobs:
               "google_secret_manager_secret_iam_member.infra_drift_price_ids_viewer",
               "google_secret_manager_secret.billing_price_ids",
               "google_secret_manager_secret_iam_member.billing_catalog_price_ids_writer",
-              "google_secret_manager_secret_iam_member.billing_catalog_stripe_api_key_reader",
-              "google_secret_manager_secret_iam_member.billing_catalog_resend_api_key_reader",
+              "google_secret_manager_secret.stripe_catalog_api_key",
+              "google_secret_manager_secret.resend_catalog_api_key",
+              "google_secret_manager_secret_iam_member.billing_catalog_stripe_catalog_api_key_reader",
+              "google_secret_manager_secret_iam_member.billing_catalog_resend_catalog_api_key_reader",
               "google_secret_manager_secret_iam_member.deploy_billing_price_ids_accessor",
               "google_secret_manager_secret_iam_member.deploy_billing_price_ids_viewer",
           }
@@ -220,6 +222,8 @@ jobs:
           }
           normal_deletes = rollback_creates | {
               "google_storage_bucket_iam_member.deploy_billing_state_reader",
+              "google_secret_manager_secret_iam_member.billing_catalog_stripe_api_key_reader",
+              "google_secret_manager_secret_iam_member.billing_catalog_resend_api_key_reader",
           }
           unchanged = {(), ("no-op",), ("read",)}
           cleanup_retry_actions = {("create", "delete"), ("delete", "create")}
@@ -306,7 +310,9 @@ jobs:
           for item in \
             "hop-billing-price-ids:price" \
             "stripe-api-key:stripe" \
-            "hop-resend-apikey:resend"; do
+            "hop-resend-apikey:resend" \
+            "stripe-catalog-api-key:stripe_catalog" \
+            "resend-catalog-api-key:resend_catalog"; do
             secret="${item%%:*}"; label="${item##*:}"
             gcloud secrets get-iam-policy "$secret" --project "$PROJECT_ID" \
               --format=json > "$RUNNER_TEMP/${label}-secret-iam.json"
@@ -480,12 +486,18 @@ jobs:
                   ("roles/secretmanager.secretAccessor", f"serviceAccount:{drift_sa}"),
                   ("roles/secretmanager.viewer", f"serviceAccount:{drift_sa}"),
               },
+              # Runtime credentials: only the runtime service reads each one.
               "stripe": {
                   ("roles/secretmanager.secretAccessor", f"serviceAccount:hop-billingd@{project}.iam.gserviceaccount.com"),
-                  ("roles/secretmanager.secretAccessor", f"serviceAccount:{billing_sa}"),
               },
               "resend": {
                   ("roles/secretmanager.secretAccessor", f"serviceAccount:hop-accountd@{project}.iam.gserviceaccount.com"),
+              },
+              # Catalog credentials: only the billing catalog apply reads them.
+              "stripe_catalog": {
+                  ("roles/secretmanager.secretAccessor", f"serviceAccount:{billing_sa}"),
+              },
+              "resend_catalog": {
                   ("roles/secretmanager.secretAccessor", f"serviceAccount:{billing_sa}"),
               },
           }
