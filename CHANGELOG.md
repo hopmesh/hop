@@ -5,7 +5,10 @@ git-cliff. Do not edit by hand.
 ## Unreleased
 
 ### Bug Fixes
+- trust Cloud Run's link-local proxy range for example.hopme.sh (ef0e554)
+- stop the decode benchmark test panicking on runner noise (3451980)
 - disable detached git maintenance in fixture repos (2d4ed6f)
+- verify catalog and runtime secret grants after bootstrap apply (fcfd4f2)
 - pin setup-android to v4.0.4 (d2a2696)
 - bump rustls to 0.23.45 for RUSTSEC-2026-0285 (fb3c946)
 - keep public image refs single-line in deploy output (6f54d82)
@@ -369,6 +372,7 @@ git-cliff. Do not edit by hand.
 - Kotlin 2.4/AGP 9.2.1/Compose BOM 2026.06/okhttp 5.4 toolchain migration (#90) (4d2e3c4)
 
 ### Documentation
+- regenerate from conventional commits (36e923d)
 - regenerate from conventional commits (3dc4a0d)
 - regenerate from conventional commits (a7b5562)
 - regenerate from conventional commits (f21cb57)
@@ -455,6 +459,8 @@ git-cliff. Do not edit by hand.
 - §33 data protection & GDPR — durable store contents, residency, levers (21148ab)
 
 ### Features
+- add publish operation to billing catalog workflow (a26e508)
+- separate billing catalog secrets from runtime credentials (0774434)
 - expose native BLE and LAN bearers alongside JS seam (65d7833)
 - add persistent SQLite store option for restart durability (ABI-003) (c05ae39)
 - guard the published Apple pin, allow a validated last_rev, and stop claiming the bearers mirror exists (122350d)
@@ -661,6 +667,7 @@ git-cliff. Do not edit by hand.
 - only infra relays stamp a trace app id; devices stay fabric (55a5326)
 
 ### Performance
+- scale example and accountd to zero while the relay fleet is off (17b794e)
 - BLE scan BALANCED not LOW_LATENCY — free radio time for the peripheral role (db6719b)
 
 ### Refactor
