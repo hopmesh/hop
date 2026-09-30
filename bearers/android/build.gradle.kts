@@ -4,7 +4,7 @@ plugins {
     // core-ktx 1.19.0, whose AAR metadata hard-requires AGP >= 9.1 and compileSdk >= 37).
     // below. Both builds are now on AGP 9.x and must be bumped together (they share module dirs).
     id("com.android.library") version "9.4.0" apply false
-    id("org.jetbrains.kotlin.android") version "2.4.10" apply false
+    id("org.jetbrains.kotlin.android") version "2.4.20" apply false
     id("org.jetbrains.kotlin.jvm") version "2.4.10" apply false
 }
 
