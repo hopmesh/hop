@@ -279,6 +279,7 @@ git-cliff. Do not edit by hand.
 - keep old managed cert so the proxy cert-map swap applies cleanly (4d55d11)
 
 ### Build
+- bump the node-sdk-dependencies group (79cb5e2)
 - bump koffi in /sdk/node in the node-sdk-dependencies group (75f994c)
 - bump koffi in /sdk/node in the node-sdk-dependencies group (d73e5d5)
 - bump koffi in /sdk/node in the node-sdk-dependencies group (0ed8c0f)
@@ -372,6 +373,7 @@ git-cliff. Do not edit by hand.
 - Kotlin 2.4/AGP 9.2.1/Compose BOM 2026.06/okhttp 5.4 toolchain migration (#90) (4d2e3c4)
 
 ### Documentation
+- regenerate from conventional commits (31070a8)
 - regenerate from conventional commits (69af8c7)
 - regenerate from conventional commits (d660e0e)
 - regenerate from conventional commits (264dff1)
