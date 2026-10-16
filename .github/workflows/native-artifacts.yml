@@ -132,7 +132,7 @@ jobs:
           python3 tools/native-artifacts.py pack --root "$stage" --format tar.gz \
             --output "$RUNNER_TEMP/out/libhop-$TARGET.tar.gz"
       - name: Upload immutable Linux partial
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-linux-${{ matrix.target }}-${{ needs.authorize.outputs.source_sha }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/out/*
@@ -187,7 +187,7 @@ jobs:
               --output "$RUNNER_TEMP/out/libhop-$target.tar.gz"
           done
       - name: Upload immutable Apple partials
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-apple-${{ needs.authorize.outputs.source_sha }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/out/*
@@ -262,7 +262,7 @@ jobs:
               --output "$RUNNER_TEMP/out/libhop-$target.tar.gz"
           done
       - name: Upload immutable Android partials
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-android-${{ needs.authorize.outputs.source_sha }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/out/*
@@ -312,7 +312,7 @@ jobs:
               --output "$RUNNER_TEMP/out/libhop-$target.tar.gz"
           done
       - name: Upload immutable embedded partials
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-embedded-${{ needs.authorize.outputs.source_sha }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/out/*
@@ -354,7 +354,7 @@ jobs:
           ref: ${{ needs.authorize.outputs.source_sha }}
           persist-credentials: false
       - name: Set up Node for local provenance
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22.23.1
           cache: npm
@@ -441,7 +441,7 @@ jobs:
             ${{ runner.temp }}/bundle/*.tar.gz
             ${{ runner.temp }}/bundle/*.zip
       - name: Upload immutable signed release bundle
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-release-bundle-${{ github.run_attempt }}
           path: ${{ runner.temp }}/bundle/*
