@@ -279,6 +279,8 @@ git-cliff. Do not edit by hand.
 - keep old managed cert so the proxy cert-map swap applies cleanly (4d55d11)
 
 ### Build
+- bump cryptography from 50.0.1 to 50.0.2 in /sdk/python (1056556)
+- bump pycparser from 3.0 to 3.11 in /sdk/python (cd010df)
 - bump the web-dependencies group across 1 directory with 2 updates (5137110)
 - bump the node-sdk-dependencies group (79cb5e2)
 - bump koffi in /sdk/node in the node-sdk-dependencies group (75f994c)
@@ -374,6 +376,7 @@ git-cliff. Do not edit by hand.
 - Kotlin 2.4/AGP 9.2.1/Compose BOM 2026.06/okhttp 5.4 toolchain migration (#90) (4d2e3c4)
 
 ### Documentation
+- regenerate from conventional commits (22aa130)
 - regenerate from conventional commits (82ae13e)
 - regenerate from conventional commits (2556370)
 - regenerate from conventional commits (c7cec74)
