@@ -1,0 +1,232 @@
+# Runtime deploy: GitHub is change management, GCP is plumbing.
+#
+# Builds + pushes the four runtime images (relay, example, accountd, console), resolves their immutable
+# @sha256 digests, and applies the runtime root (infra/) via Workload Identity Federation as hop-deploy.
+#
+# TRIGGER, and why it changed. This ran on `workflow_run` of a workflow named "CI", because in the old
+# private monorepo a merge to main ran CI and a green CI on main WAS the deploy authorization. That
+# trigger is DEAD in this repository: CI stayed in hopmesh/hop when the commercial and infra trees were
+# split out here, so no workflow named "CI" exists and `workflow_run` could never fire. The deploy was
+# unreachable, silently, with nothing red to show it.
+#
+# It is now dispatch-only, deliberately, rather than `push: main`. There is no test suite in this
+# repository to gate an automatic apply against, so auto-deploy here would be strictly LESS safe than
+# the arrangement it replaced. `confirm` mirrors bootstrap-apply.yml's existing plan/apply convention,
+# so the relay runbook's "read the plan first" step happens in CI under the deploy identity rather than
+# on a workstation.
+#
+# Keyless: GitHub OIDC -> WIF -> hop-deploy (infra/bootstrap/runtime_deploy.tf). The OIDC subject is
+# pinned to refs/heads/main, so no other ref can mint these credentials. The job stays neutral until
+# both repository variables are populated from the reviewed bootstrap outputs.
+name: Runtime deploy (relay fleet + console)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "apply" to apply. Anything else plans only.'
+        required: true
+        default: plan
+        type: choice
+        options: [plan, apply]
+
+permissions:
+  contents: read
+  id-token: write # required for the WIF OIDC token exchange
+
+# Serialize deploys so two merges in quick succession cannot apply concurrently. Do not cancel a
+# running apply midway.
+concurrency:
+  group: runtime-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy runtime (WIF apply)
+    # main only, and neutral until the runtime WIF repo variables are wired. The ref restriction is not
+    # cosmetic: hop-deploy's OIDC subject is pinned to refs/heads/main, so a dispatch from any other ref
+    # cannot mint credentials anyway and would fail at auth. Failing here says why.
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      vars.GCP_RUNTIME_WIF_PROVIDER != '' &&
+      vars.GCP_RUNTIME_SERVICE_ACCOUNT != ''
+    runs-on: ubuntu-latest
+    env:
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID || 'hop-mesh' }}
+      AR_REGION: us-central1
+      HEAD_SHA: ${{ github.sha }}
+      # Only the exact string "apply" applies; read once so the decision lives in one place.
+      CONFIRM: ${{ inputs.confirm }}
+    steps:
+      # Keep the checkout credentials (default
+      # persist-credentials) so `git ls-remote origin` in the supersession guard can read the private
+      # repo's main tip.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+
+      # SUPERSESSION GUARD. If a newer commit is already main's tip, this build is stale: skip the whole
+      # deploy rather than apply an old tree over a newer one. This is a real skip (the job still
+      # SUCCEEDS but applies nothing), NOT `exit 0` mid-step: every subsequent step is gated on
+      # steps.guard.outputs.superseded so a superseded run no-ops cleanly.
+      - id: guard
+        name: Skip if a newer commit already superseded this one
+        run: |
+          set -euo pipefail
+          tip="$(git ls-remote origin refs/heads/main | cut -f1)"
+          echo "current=$tip" >> "$GITHUB_OUTPUT"
+          if [ "$tip" != "$HEAD_SHA" ]; then
+            echo "superseded=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::main tip $tip supersedes build sha $HEAD_SHA; skipping deploy (a newer run will apply)"
+          else
+            echo "superseded=false" >> "$GITHUB_OUTPUT"
+            echo "deploying $HEAD_SHA (current main tip)"
+          fi
+
+      - id: auth
+        if: steps.guard.outputs.superseded != 'true'
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: hop-mesh
+          workload_identity_provider: ${{ vars.GCP_RUNTIME_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_RUNTIME_SERVICE_ACCOUNT }}
+          token_format: access_token
+
+      # Build + push all four runtime images tagged with the full source SHA, then resolve each pushed
+      # tag to an immutable @sha256 digest (the runtime variables reject anything that is not @sha256).
+      # The images are only built, pushed, and inspected here; none is executed on the runner.
+      #
+      # accountd is the Rust console backend (its Dockerfile builds --features live,firestore); console
+      # is the Next.js standalone front. Both build from the repo root as their context, like the other
+      # two.
+      # The public service sources (relayd, the example endpoint) live in hopmesh/hop, which is the
+      # canonical public monorepo. Cloning it needs no credentials. Pinned to the same ref the deploy
+      # is for is NOT possible across repos, so this takes hop's main: the public services are built
+      # from public main by design, and their digests are pinned into the tofu vars either way.
+      - name: Check out the public sources (hopmesh/hop)
+        if: steps.guard.outputs.superseded != 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: hopmesh/hop
+          ref: main
+          path: public
+          persist-credentials: false
+
+      - name: Build, push, and resolve image digests
+        if: steps.guard.outputs.superseded != 'true'
+        env:
+          ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+        run: |
+          set -euo pipefail
+          registry="${AR_REGION}-docker.pkg.dev"
+
+          echo "$ACCESS_TOKEN" | docker login -u oauth2accesstoken --password-stdin "https://${registry}"
+
+          # name -> Dockerfile -> the GITHUB_ENV key the tofu step reads.
+          build_push_pin() {
+            local repo_name="$1" dockerfile="$2" env_key="$3" context="${4:-.}"
+            local repo="${registry}/${PROJECT_ID}/hop/${repo_name}"
+            docker build -f "${context}/${dockerfile}" -t "${repo}:${HEAD_SHA}" "$context"
+            docker push "${repo}:${HEAD_SHA}"
+            local pinned
+            pinned="$(docker inspect --format='{{range .RepoDigests}}{{println .}}{{end}}' "${repo}:${HEAD_SHA}" | grep "^${repo}@sha256:" | head -n1)"
+            test -n "$pinned" || { echo "could not resolve ${repo_name} digest" >&2; exit 1; }
+            echo "${repo_name}: ${pinned}"
+            echo "${env_key}=${pinned}" >> "$GITHUB_ENV"
+          }
+
+          # The four images no longer come from ONE tree. This repo holds the commercial half
+          # (accountd, console) and the terraform that deploys all four; the relay and the public
+          # example endpoint are public source and live in hopmesh/hop.
+          #
+          # accountd is the one that cannot build from either tree alone. Its Dockerfile copies
+          # `Cargo.toml`, `core/` and `examples/` from the context root, and its Cargo.toml path-depends
+          # on `../../core/stores/hop-store-firestore`. Those live in hopmesh/hop; this repo's root has
+          # only apps/ infra/ services/ tools/. Building it with context `.` fails on
+          # `"/Cargo.toml": not found`, which is exactly how this deploy first broke after the split.
+          #
+          # So the crate is overlaid onto the public checkout, which already carries core/, examples/ and
+          # the root manifest, reproducing the single-tree layout the Dockerfile was written against.
+          # hop no longer contains services/hop-accountd (it was extracted here), so nothing is
+          # clobbered, and accountd declares its own [workspace] so hop's workspace does not adopt it.
+          #
+          # The alternative is to make accountd depend on the PUBLISHED hop-mesh-store-firestore crate
+          # instead of a relative path, which would decouple the repos properly. That is a design change
+          # with a version-pinning cost, deliberately not made here.
+          mkdir -p public/services
+          cp -R services/hop-accountd public/services/hop-accountd
+          test -f public/Cargo.toml && test -d public/core/stores/hop-store-firestore \
+            || { echo "public checkout is missing the trees accountd needs" >&2; exit 1; }
+
+          # console is self-contained (its Dockerfile only reads apps/web/console/), so it builds from
+          # this repo's root unchanged.
+          build_push_pin hop-accountd services/hop-accountd/Dockerfile ACCOUNTD_IMAGE public
+          build_push_pin hop-console  apps/web/console/Dockerfile      CONSOLE_IMAGE  .
+          build_push_pin hop-relayd   services/hop-relayd/Dockerfile   RELAY_IMAGE    public
+          build_push_pin hop-example  services/hop-endpoint/Dockerfile EXAMPLE_IMAGE  public
+
+      - if: steps.guard.outputs.superseded != 'true'
+        uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: "1.12.3"
+          # tofu_wrapper defaults to TRUE, which replaces the tofu binary with a wrapper that captures
+          # stdout/stderr/exitcode as step outputs. The wrapper's own exit status is what `$?` sees, so
+          # `tofu plan -detailed-exitcode` came back 0 on a plan that said "0 to add, 3 to change, 0 to
+          # destroy", and the gate below printed "no changes pending" for a non-empty plan. Verified the
+          # binary itself is fine: tofu 1.12.3 returns 2 for that plan locally, with and without -out.
+          # A plan gate that cannot distinguish "no changes" from "changes" is worse than no gate.
+          tofu_wrapper: false
+
+      # The terraform variables are written ONCE into the job environment so the plan and the apply
+      # cannot be evaluated against different values. Not a YAML anchor (GitHub Actions rejects
+      # anchors/aliases in workflow files) and not job-level `env:` either, because the image vars are
+      # written to GITHUB_ENV by the build step above and job-level env resolves before that step runs.
+      - name: Assemble terraform variables
+        if: steps.guard.outputs.superseded != 'true'
+        run: |
+          {
+            echo "TF_VAR_project_id=${{ env.PROJECT_ID }}"
+            echo "TF_VAR_relay_image=${{ env.RELAY_IMAGE }}"
+            echo "TF_VAR_example_image=${{ env.EXAMPLE_IMAGE }}"
+            echo "TF_VAR_accountd_image=${{ env.ACCOUNTD_IMAGE }}"
+            echo "TF_VAR_console_image=${{ env.CONSOLE_IMAGE }}"
+            echo "TF_VAR_deployment_source_sha=${{ github.sha }}"
+            echo "TF_VAR_deployment_environment=${{ vars.DEPLOYMENT_ENVIRONMENT || 'production' }}"
+            echo "TF_VAR_relay_identity_version=${{ vars.RELAY_IDENTITY_VERSION || '1' }}"
+            echo "TF_VAR_example_identity_version=${{ vars.EXAMPLE_IDENTITY_VERSION || '1' }}"
+            echo "TF_VAR_relays_enabled=${{ vars.RELAYS_ENABLED || 'false' }}"
+            echo "TF_VAR_cloud_run_ingress=${{ vars.CLOUD_RUN_INGRESS || 'INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER' }}"
+            echo "TF_VAR_max_instances_per_region=${{ vars.MAX_INSTANCES_PER_REGION || '1' }}"
+            echo "TF_VAR_region_allowlist=${{ vars.RELAY_REGION_ALLOWLIST || '[]' }}"
+          } >> "$GITHUB_ENV"
+
+      - name: tofu init + plan (runtime root)
+        id: plan
+        if: steps.guard.outputs.superseded != 'true'
+        working-directory: infra
+        run: |
+          set -euo pipefail
+          tofu init -input=false
+          echo "relays_enabled=${TF_VAR_relays_enabled}  region_allowlist=${TF_VAR_region_allowlist}"
+          # -detailed-exitcode: 0 = no changes, 2 = changes present, 1 = error. An unreadable plan must
+          # never read as "nothing to do", which is why this is not a bare `tofu plan`.
+          set +e
+          tofu plan -input=false -no-color -detailed-exitcode -out=tfplan
+          rc=$?
+          set -e
+          case "$rc" in
+            0) echo "changes=false" >> "$GITHUB_OUTPUT"; echo "no changes pending" ;;
+            2) echo "changes=true"  >> "$GITHUB_OUTPUT"; echo "changes pending" ;;
+            *) echo "::error::tofu plan failed (exit $rc); nothing was applied"; exit "$rc" ;;
+          esac
+
+      # Applies the SAVED plan file, so the apply cannot drift from the plan just printed above.
+      - name: tofu apply (runtime root)
+        if: steps.guard.outputs.superseded != 'true' && env.CONFIRM == 'apply'
+        working-directory: infra
+        run: tofu apply -input=false -auto-approve -no-color tfplan
+
+      - name: Plan only, nothing applied
+        if: steps.guard.outputs.superseded != 'true' && env.CONFIRM != 'apply'
+        run: |
+          echo "::notice::plan-only run (confirm=${CONFIRM}); changes pending: ${{ steps.plan.outputs.changes }}. Re-dispatch with confirm=apply to apply."
