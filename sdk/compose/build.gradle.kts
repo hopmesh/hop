@@ -10,7 +10,7 @@ plugins {
     kotlin("multiplatform") version "2.4.10"
     id("org.jetbrains.kotlin.plugin.compose") version "2.4.10"
     id("org.jetbrains.compose") version "1.12.0"
-    id("com.android.library") version "9.4.0"
+    id("com.android.library") version "9.4.1"
     `maven-publish`
 }
 
