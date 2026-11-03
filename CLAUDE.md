@@ -55,8 +55,12 @@ would break the icon pipeline and demote a subsystem, so they are documented her
 
 ## Working with agents
 
-File-mutating work in parallel needs `isolation: "worktree"` on each agent, or they corrupt each other's HEAD in the shared checkout. Read-only fan-out is fine shared.
-Worktree checkpoint rule: every file-mutating session in a worktree must commit its changes to a named branch before yielding. Never leave uncommitted changes or detached-HEAD commits without explicit checkpointing. Before tearing down or pruning a worktree, verify `git status --porcelain` is empty and all commits are reachable from a branch or PR. `tools/check-worktree-checkpoints.sh` checks both, and it runs in `tools/local-ci-mirror.sh` rather than in CI, because a CI checkout has no worktrees to inspect; CI runs its self-test only. Nothing invoked either file until 2026-09-07, so treat the guard as a local pre-push step you run, not as a gate that will stop you.
+Isolation is active only when explicitly requested and enabled. Do not assume it from the harness or from the session's starting state.
+- In OMP, pass `isolated: true` on each mutating `task` agent, and confirm that isolation is enabled for this session before relying on it. Use the default patch handoff.
+- In Claude Code, use `isolation: "worktree"` on each mutating agent.
+- If isolation is not confirmed, do not start parallel mutators in the shared checkout. Run them sequentially, or give each one its own worktree created from the pinned base SHA named in its packet, and follow the checkpoint rule below.
+- Each mutator starts from the literal base SHA in its packet, not from the parent's current HEAD. Never let two mutators write to the same checkout. Read-only fan-out may share a checkout.
+Worktree checkpoint rule for worktrees you create: commit changes to a named branch before yielding. Never leave uncommitted changes or detached-HEAD commits without explicit checkpointing. Before tearing down or pruning a worktree, verify `git status --porcelain` is empty and all commits are reachable from a branch or PR. Do not modify locked or user-owned worktrees. `tools/check-worktree-checkpoints.sh` checks worktrees, and it runs in `tools/local-ci-mirror.sh` rather than CI; CI runs its self-test only.
 Additive test module rule: when multiple agents add tests to an existing Rust module, never append inline `mod *_tests` blocks to the end of the shared file. Appending blocks to the same EOF location causes git 3-way merge conflicts where bodies interleave across conflict markers. New test modules must use the per-file convention:
 ```rust
 #[cfg(test)]

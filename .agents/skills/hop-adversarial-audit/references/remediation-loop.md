@@ -42,13 +42,12 @@ Bad lanes combine unrelated services, platforms, release systems, business artif
 For each lane:
 
 1. Fetch the requested base.
-2. Create one dedicated branch and worktree from the pinned SHA.
+2. Confirm isolation is explicitly requested and enabled: OMP `isolated: true` with the default patch handoff, or Claude Code `isolation: "worktree"`. If it cannot be confirmed, create one dedicated branch and worktree from the pinned base SHA, or run lanes sequentially. Never run two mutators in one checkout.
 3. Give one mutating agent ownership.
 4. Include finding evidence and closure contract in the prompt.
-5. Require focused verification and a coherent commit before handoff.
-6. Keep the worktree clean.
+5. Require focused verification and a coherent handoff: an OMP patch handoff, or a commit and clean worktree for worktrees you created.
 
-The lane packet contains concrete values, not references: full base SHA, branch name, worktree path, explicit allowed paths, prohibited paths, verbatim finding evidence, verbatim invariant, every closure-contract item, focused verification, and stop conditions.
+The lane packet contains concrete values, not references: full base SHA, isolation mode and whether it was confirmed enabled, explicit allowed paths, prohibited paths, verbatim finding evidence, verbatim invariant, every closure-contract item, focused verification, and stop conditions. The mutator checks `git rev-parse HEAD` equals the pinned base SHA before editing and stops if it differs. Include the branch and worktree path when you create them.
 
 Read-only auditors may share a checkout. Never let multiple mutators share a dirty worktree.
 
@@ -98,7 +97,7 @@ Reopen the finding when any required layer fails.
 
 ## 7. Integrate deliberately
 
-Integrate committed lane branches in a separate integration worktree. Resolve conflicts as an integration task, not inside arbitrary fix lanes.
+Integrate lane handoffs in a separate integration worktree you create, or in the parent's workspace. Apply OMP patch handoffs there deliberately and commit each lane's branch result where one exists. Resolve conflicts as an integration task, not inside arbitrary fix lanes.
 
 Run:
 

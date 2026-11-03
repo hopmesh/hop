@@ -25,7 +25,7 @@
       "assertions": [
         "The response identifies the supplied audit ID and 40-character SHA, quotes CORE-001's invariant and closure contract, and refuses to infer missing baseline facts.",
         "Only CORE-001 receives a UTC approval record; a constrained ledger diff must prove BIZ-001 and every other finding record stayed unchanged.",
-        "The mutator packet contains the pinned base SHA, dedicated branch and worktree, explicit path allowlist, recorded invariant, and full closure contract.",
+        "The mutator packet contains the pinned base SHA, the isolation mode and whether it was confirmed enabled, explicit path allowlist, recorded invariant, and full closure contract.",
         "Hostile fault and restart regressions are followed by an independent closure auditor checking adjacent layers and every applicable backend.",
         "Focused checks, the full repository suite, and protected CI are bound to the exact final SHA and invalidated by later branch changes.",
         "A closure-state matrix keeps source, deploy, live, registry, hardware, operational, and business validation independent."
