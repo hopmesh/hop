@@ -1897,7 +1897,7 @@ DEALINGS IN THE SOFTWARE.
 
 </details>
 
-### ctutils 0.4.2
+### ctutils 0.4.4
 
 - Licence: `Apache-2.0 OR MIT`
 - Source: https://github.com/RustCrypto/utils
