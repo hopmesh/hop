@@ -39,6 +39,6 @@ Distribute the skill directory as an ordinary archive or use a `.skill` package 
 
 - Harness-specific permission, hook, tool-name, and manual-invocation fields are intentionally absent.
 - Harnesses without subagents run reviewer lanes sequentially.
-- Harnesses without worktrees must stop before remediation unless they can provide equivalent mutation isolation.
+- Mutating lanes need harness-provided isolation or equivalent mutation isolation. OMP supplies isolated child tasks with `isolated: true` and a default patch handoff; it does not require manually managed worktrees.
 - Local user skills do not automatically appear in cloud or sandbox sessions.
 - Skill configuration is usually loaded at process start. Restart the harness after installation or updates.

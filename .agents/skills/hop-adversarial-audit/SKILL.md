@@ -1,7 +1,7 @@
 ---
 name: hop-adversarial-audit
 description: "Runs HOP's canonical two-phase, evidence-grounded adversarial audit and approved-finding remediation workflow across protocol, every code, platform, release, and infrastructure component, plus product, pricing, sales, legal, finance, support, and operations. Always use for a HOP or hopmesh/monorepo audit, red team, readiness grade, process-forensics review, prior-audit rerun, get-to-A campaign, immutable graded report, finding-ID remediation, closure, or reviewer and fix-agent fan-out, even when only business or one audit domain is named. Do not use for ordinary bug fixes, single PR or diff reviews, site-only full-stack audits, copywriting, report summaries, credential rotation, or other projects."
-compatibility: "Requires filesystem and Git access. Subagents and worktrees are strongly recommended. Web access is optional for market and legal evidence."
+compatibility: "Requires filesystem and Git access. Subagents and harness-provided isolation are strongly recommended. Web access is optional for market and legal evidence."
 metadata:
   project: hop
   workflow: audit-remediate
@@ -75,7 +75,7 @@ Use three intersecting reviewer shapes:
 - **Horizontal vector reviewers** trace one invariant across components, such as forward secrecy, durable acceptance, authority, resource bounds, package provenance, pricing consistency, or customer onboarding.
 - **Business and operating reviewers** independently assess market, positioning, sales, pricing, unit economics, legal readiness, support, governance, and execution systems.
 
-Read-only reviewers may share a checkout. If a reviewer must write working files, give it an isolated worktree or an external temporary directory.
+Read-only reviewers may share a checkout. Isolate reviewers that write working files using the harness's mechanism; in OMP use `isolated: true` for a child task and its default patch handoff.
 
 Every lane returns:
 
@@ -180,12 +180,12 @@ Group approved findings by coherent subsystem and release surface. Split unrelat
 For every mutating lane:
 
 - Fetch and pin the requested base SHA.
-- Use one branch and one dedicated worktree per mutator.
+- Isolate each mutator using the harness's mechanism. In OMP request `isolated: true` and use the default patch handoff; do not prescribe a branch or worktree per child. Other harnesses may use dedicated branches and worktrees.
 - Give the agent the finding, violated invariant, closure contract, permitted paths, and focused verification commands.
-- Require a coherent commit and clean-worktree handoff.
+- Require a coherent handoff, using the harness's patch handoff in OMP or a commit and clean worktree for independently managed worktrees.
 - Keep live infrastructure changes out of source remediation unless separately authorized.
 
-Write a concrete mutator packet before assignment. It contains the literal base SHA, actual branch name, actual worktree path, explicit path allowlist, verbatim finding evidence, verbatim invariant, every closure-contract item, focused commands, prohibited paths, and stop conditions. References such as "the pinned SHA" or "the closure contract" are not a handoff.
+Write a concrete mutator packet before assignment. It contains the literal base SHA, the applicable harness isolation and handoff, explicit path allowlist, verbatim finding evidence, verbatim invariant, every closure-contract item, focused commands, prohibited paths, and stop conditions. For independently managed branch worktrees include the actual branch and path. References such as "the pinned SHA" or "the closure contract" are not a handoff.
 
 Business remediation can produce strategy, pricing, sales, legal-review, or operating artifacts, but it must not invent customer evidence, legal approval, financial results, or market facts.
 

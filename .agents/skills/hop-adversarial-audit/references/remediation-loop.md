@@ -42,13 +42,12 @@ Bad lanes combine unrelated services, platforms, release systems, business artif
 For each lane:
 
 1. Fetch the requested base.
-2. Create one dedicated branch and worktree from the pinned SHA.
+2. Use the harness's isolation mechanism. In OMP request `isolated: true` and use its default patch handoff; do not create a branch or worktree for each child. Other harnesses may use a dedicated branch and worktree from the pinned SHA.
 3. Give one mutating agent ownership.
 4. Include finding evidence and closure contract in the prompt.
-5. Require focused verification and a coherent commit before handoff.
-6. Keep the worktree clean.
+5. Require focused verification and a coherent handoff. Independently managed worktrees require a commit and clean worktree; OMP children use their patch handoff.
 
-The lane packet contains concrete values, not references: full base SHA, branch name, worktree path, explicit allowed paths, prohibited paths, verbatim finding evidence, verbatim invariant, every closure-contract item, focused verification, and stop conditions.
+The lane packet contains concrete values, not references: full base SHA, harness isolation and handoff, explicit allowed paths, prohibited paths, verbatim finding evidence, verbatim invariant, every closure-contract item, focused verification, and stop conditions. Include the branch and worktree path when independently managed.
 
 Read-only auditors may share a checkout. Never let multiple mutators share a dirty worktree.
 
@@ -98,7 +97,7 @@ Reopen the finding when any required layer fails.
 
 ## 7. Integrate deliberately
 
-Integrate committed lane branches in a separate integration worktree. Resolve conflicts as an integration task, not inside arbitrary fix lanes.
+Integrate lane handoffs in the assigned workspace. For OMP use its default patch handoff; for independently managed branches integrate their commits deliberately. Resolve conflicts as an integration task, not inside arbitrary fix lanes.
 
 Run:
 
