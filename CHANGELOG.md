@@ -280,6 +280,8 @@ git-cliff. Do not edit by hand.
 - keep old managed cert so the proxy cert-map swap applies cleanly (4d55d11)
 
 ### Build
+- bump org.jetbrains.kotlin.android in /bearers/android (2f623bd)
+- bump cffi from 2.1.0 to 2.1.1 in /sdk/python (e452015)
 - bump setuptools from 84.2.0 to 84.2.1 in /sdk/python (1cdec18)
 - bump pip from 26.2.1 to 26.2.2 in /sdk/python (c77fb8d)
 - bump setuptools from 84.0.0 to 84.2.0 in /sdk/python (5241203)
@@ -380,6 +382,7 @@ git-cliff. Do not edit by hand.
 - Kotlin 2.4/AGP 9.2.1/Compose BOM 2026.06/okhttp 5.4 toolchain migration (#90) (4d2e3c4)
 
 ### Documentation
+- regenerate from conventional commits (1678044)
 - regenerate THIRD-PARTY-NOTICES for ctutils 0.4.4 (261cedb)
 - regenerate from conventional commits (22aa130)
 - regenerate from conventional commits (82ae13e)
