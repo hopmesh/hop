@@ -46,7 +46,7 @@
     "react-test-renderer": "19.2.3",
     "typescript": "^6.0.3",
     "detox": "20.28.0",
-    "@cucumber/cucumber": "11.3.0",
+    "@cucumber/cucumber": "13.2.1",
     "ts-node": "10.9.2"
   },
   "engines": {
