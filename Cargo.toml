@@ -62,4 +62,4 @@ miniz_oxide = "0.9"
 # cross-compile (ring needs the ESP GCC). Drop snow's default features and enable only the pure-Rust
 # resolver: same active crypto (ChaCha20-Poly1305/AES-GCM/X25519/BLAKE2), no ring, portable everywhere.
 snow = { version = "0.10", default-features = false, features = ["default-resolver", "default-resolver-crypto"] }
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
